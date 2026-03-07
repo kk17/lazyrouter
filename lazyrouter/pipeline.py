@@ -428,15 +428,13 @@ def _update_cache_tracker_for_selection(ctx: RequestContext) -> None:
         cache_tracker_set(ctx.session_key, ctx.selected_model)
         return
 
-    existing_model, age_seconds = existing_entry
-    buffer_seconds = ctx.config.router.cache_buffer_seconds
+    existing_model, _ = existing_entry
     if existing_model != ctx.selected_model:
         cache_tracker_set(ctx.session_key, ctx.selected_model)
         return
 
-    # Refresh only when the existing entry has expired; keep hot-cache age stable on hits.
-    if not is_cache_hot(age_seconds, model_config.cache_ttl, buffer_seconds):
-        cache_tracker_set(ctx.session_key, ctx.selected_model)
+    # Refresh the cache tracker on every hit because prompt cache TTL resets on read.
+    cache_tracker_set(ctx.session_key, ctx.selected_model)
 
 
 async def select_model(ctx: RequestContext, health_checker: Any, router: Any) -> None:

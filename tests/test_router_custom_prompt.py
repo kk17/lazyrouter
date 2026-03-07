@@ -70,9 +70,9 @@ def test_model_description_includes_conservative_cached_input_price_estimate():
     router = LLMRouter(cfg)
     desc = router._build_model_descriptions()
 
-    # 5min TTL with 30s buffer and 2min/msg cadence => hot_hits=2
-    # multiplier = (1.25 + 0.10*2) / 3 = 0.48333...
-    assert "est_cached_input_price=$0.483/1M (@~2.0min/msg)" in desc
+    # 5min TTL with 30s buffer and 2min/msg cadence => spm <= hot_window
+    # multiplier = (1.25 + 0.10*9) / 10 = 0.215
+    assert "est_cached_input_price=$0.215/1M (@~2.0min/msg)" in desc
 
 
 def test_model_description_omits_cached_input_estimate_without_cache_ttl():
@@ -128,9 +128,9 @@ def test_model_description_uses_configured_cache_multipliers():
     router = LLMRouter(cfg)
     desc = router._build_model_descriptions()
 
-    # 5min TTL with 30s buffer and 2min/msg cadence => hot_hits=2
-    # multiplier = (1.5 + 0.2*2) / 3 = 0.63333...
-    assert "est_cached_input_price=$0.633/1M (@~2.0min/msg)" in desc
+    # 5min TTL with 30s buffer and 2min/msg cadence => spm <= hot_window
+    # multiplier = (1.5 + 0.2*9) / 10 = 0.33
+    assert "est_cached_input_price=$0.330/1M (@~2.0min/msg)" in desc
 
 
 def test_router_accepts_custom_prompt_in_config():
