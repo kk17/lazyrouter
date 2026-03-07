@@ -328,6 +328,13 @@ class HealthChecker:
         router_model = self.config.router.model
         router_probe_source_model_name: Optional[str] = None
 
+        async def staggered_check(delay: float, coro: Any) -> Any:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            return await coro
+
+        current_delay = 0.0
+
         for model_name, model_config in self.config.llms.items():
             if (
                 model_config.provider == router_provider_name
@@ -346,13 +353,17 @@ class HealthChecker:
             model_names.append(model_name)
             tasks.append(
                 asyncio.wait_for(
-                    check_model_health(
-                        model_name, provider, model_config.model, model_config.provider
+                    staggered_check(
+                        current_delay,
+                        check_model_health(
+                            model_name, provider, model_config.model, model_config.provider
+                        )
                     ),
                     timeout=self.hc_config.max_latency_ms / 1000
-                    + 5,  # generous timeout
+                    + 5 + current_delay,  # generous timeout
                 )
             )
+            current_delay += self.hc_config.stagger_seconds
 
         router_task = None
         if router_probe_source_model_name is None:
@@ -363,14 +374,17 @@ class HealthChecker:
                 router_api_key, router_base_url, router_api_style, router_model
             )
             router_task = asyncio.wait_for(
-                check_model_health(
-                    router_model,
-                    router_provider,
-                    router_model,
-                    router_provider_name,
-                    is_router=True,
+                staggered_check(
+                    current_delay,
+                    check_model_health(
+                        router_model,
+                        router_provider,
+                        router_model,
+                        router_provider_name,
+                        is_router=True,
+                    )
                 ),
-                timeout=self.hc_config.max_latency_ms / 1000 + 5,  # generous timeout
+                timeout=self.hc_config.max_latency_ms / 1000 + 5 + current_delay,  # generous timeout
             )
 
         if router_task is None:
