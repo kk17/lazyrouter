@@ -1,6 +1,7 @@
 """Periodic health checker that benchmarks models and tracks availability"""
 
 import asyncio
+import functools
 import json
 import logging
 import time
@@ -328,10 +329,10 @@ class HealthChecker:
         router_model = self.config.router.model
         router_probe_source_model_name: Optional[str] = None
 
-        async def staggered_check(delay: float, coro: Any) -> Any:
+        async def staggered_check(delay: float, coro_factory: Any) -> Any:
             if delay > 0:
                 await asyncio.sleep(delay)
-            return await coro
+            return await coro_factory()
 
         current_delay = 0.0
 
@@ -355,7 +356,8 @@ class HealthChecker:
                 asyncio.wait_for(
                     staggered_check(
                         current_delay,
-                        check_model_health(
+                        functools.partial(
+                            check_model_health,
                             model_name, provider, model_config.model, model_config.provider
                         )
                     ),
@@ -376,7 +378,8 @@ class HealthChecker:
             router_task = asyncio.wait_for(
                 staggered_check(
                     current_delay,
-                    check_model_health(
+                    functools.partial(
+                        check_model_health,
                         router_model,
                         router_provider,
                         router_model,
