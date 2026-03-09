@@ -25,7 +25,7 @@ class ServeConfig(BaseModel):
     @field_validator("api_key")
     @classmethod
     def api_key_must_not_be_empty(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v == "":
+        if v is not None and v.strip() == "":
             raise ValueError("serve.api_key must not be an empty string; use null/None to disable authentication")
         return v
 

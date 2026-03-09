@@ -52,30 +52,6 @@ health_checker: HealthChecker = None
 security = HTTPBearer(auto_error=False)
 
 
-def verify_api_key(
-    auth: HTTPAuthorizationCredentials | None = Depends(security),
-) -> None:
-    """Verify API key from Bearer token."""
-    # If no API key is configured (None), allow all requests.
-    # Empty string API keys are rejected at config load time by ServeConfig validation.
-    if config is None or config.serve.api_key is None:
-        return
-
-    if not auth:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing API Key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    if not secrets.compare_digest(auth.credentials, config.serve.api_key):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API Key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-
 def _configure_logging(debug: bool) -> None:
     """Apply runtime log level from config."""
     level = logging.DEBUG if debug else logging.INFO
@@ -406,6 +382,27 @@ def create_app(
             logger.exception(f"Failed to load configuration: {e}")
             raise
 
+    def verify_api_key(
+        auth: HTTPAuthorizationCredentials | None = Depends(security),  # noqa: B008
+    ) -> None:
+        """Verify API key from Bearer token."""
+        if config.serve.api_key is None:
+            return
+
+        if not auth:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing API Key",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        if not secrets.compare_digest(auth.credentials, config.serve.api_key):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API Key",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
     # Initialize router
     try:
         router = LLMRouter(config)
@@ -473,7 +470,11 @@ def create_app(
             results=results,
         )
 
-    @app.get("/v1/health-status", response_model=HealthStatusResponse)
+    @app.get(
+        "/v1/health-status",
+        response_model=HealthStatusResponse,
+        dependencies=[Depends(verify_api_key)],
+    )
     async def health_status():
         """Return current health-check state and latest per-model benchmark results."""
         return _build_health_status_response()
@@ -557,7 +558,11 @@ def create_app(
             logger.error(f"Error processing request: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.get("/v1/health-check", response_model=HealthStatusResponse)
+    @app.get(
+        "/v1/health-check",
+        response_model=HealthStatusResponse,
+        dependencies=[Depends(verify_api_key)],
+    )
     async def health_check_now():
         """Run a fresh health check, then return the same payload as /v1/health-status."""
         await health_checker.run_check()
