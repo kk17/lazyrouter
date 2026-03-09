@@ -6,7 +6,7 @@
   <img src="assets/lazyrouter_logo.png" alt="LazyRouter Logo" width="280"/>
 </p>
 
-LazyRouter is a lightweight OpenAI-compatible router that picks the best configured model for each request.
+LazyRouter is a lightweight LLM router that picks the best configured model for each request, exposing both OpenAI-compatible and Anthropic-compatible APIs.
 
 It is designed for simple operation: define providers/models in YAML, call `model: "auto"`, and let the router choose.
 
@@ -26,9 +26,11 @@ It also helps translate behavior across API styles (OpenAI, Gemini, and Anthropi
 ## Highlights
 
 - OpenAI-compatible `/v1/chat/completions` endpoint
+- Anthropic-compatible `/v1/messages` endpoint (for Claude Code and other Anthropic-native clients)
 - LLM-based routing without extra training pipelines
-- Mixed provider support in one config (OpenAI, Anthropic, Gemini, OpenAI-compatible gateways)
-- Useful as a cost-control gatekeeper for agent frameworks like OpenClaw
+- Mixed provider support in one config (OpenAI, Anthropic, Gemini, GitHub Copilot, OpenAI-compatible gateways)
+- GitHub Copilot subscription models as a provider (use your included models at zero marginal cost)
+- Useful as a cost-control gatekeeper for agent frameworks like OpenClaw, Claude Code, and Opencode
 - Built-in compatibility handling between OpenAI, Gemini, and Anthropic styles
 - Streaming and non-streaming response support
 - Health and benchmark endpoints for operational visibility
@@ -132,6 +134,56 @@ The router will honor these explicit requests and route to the specified model.
 When `serve.show_model_prefix` is enabled, LazyRouter strips known `[model-name]` prefixes from assistant history before upstream calls. This works for plain string content and assistant `content` part lists (for multimodal/tool-use style messages).
 
 
+## Claude Code Integration
+
+Claude Code speaks the Anthropic protocol natively. LazyRouter's `/v1/messages` endpoint accepts Anthropic-format requests, routes them through the same auto-routing pipeline, and returns Anthropic-format responses.
+
+Set the base URL to point Claude Code at your LazyRouter instance:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:1234
+```
+
+Claude Code will send requests to `/v1/messages` as usual. LazyRouter translates internally, picks the best model, and returns a properly-formatted Anthropic response (including streaming with `content_block_delta` events).
+
+If you want Claude Code to always auto-route, use `model: auto` in your Claude Code config. You can also specify any model name configured in your `llms` section.
+
+## Opencode Integration
+
+Opencode uses the OpenAI-compatible API. Configure it to point at LazyRouter:
+
+```bash
+export OPENAI_API_BASE=http://localhost:1234/v1
+```
+
+Use `model: auto` for automatic routing.
+
+## GitHub Copilot as a Provider
+
+If you have a GitHub Copilot subscription, you can use the models included in your plan (GPT-4o, Claude 3.5 Sonnet, Gemini Flash, etc.) as routing targets at zero marginal cost.
+
+Configure in `config.yaml`:
+
+```yaml
+providers:
+  github-copilot:
+    api_key: "${GITHUB_TOKEN}"
+    base_url: "https://api.githubcopilot.com"
+    api_style: github-copilot
+
+llms:
+  copilot-gpt-4o:
+    description: "GPT-4o via GitHub Copilot subscription (included in plan)."
+    provider: github-copilot
+    model: "gpt-4o"
+    input_price: 0.0
+    output_price: 0.0
+    coding_elo: 1380
+    writing_elo: 1430
+```
+
+The required headers (`Copilot-Integration-Id`, `x-initiator`) are set automatically.
+
 ## OpenClaw Integration
 
 Edit your `.openclaw/openclaw.json` and add a LazyRouter provider under `models.providers`:
@@ -182,6 +234,7 @@ curl -X POST http://localhost:1234/v1/chat/completions \
 - `GET /v1/health-status` - Show cached health check results
 - `GET /v1/health-check` - Run health check now and return results
 - `POST /v1/chat/completions` - OpenAI-compatible chat endpoint
+- `POST /v1/messages` - Anthropic-compatible messages endpoint
 
 ## Technical Implementation
 
