@@ -408,3 +408,44 @@ class TestLitellmCopilotParams:
         )
         assert params["api_base"] == "https://api.githubcopilot.com"
         assert params["model"] == "openai/claude-3.5-sonnet"
+
+    def test_anthropic_oauth_token_sets_bearer_headers(self):
+        from lazyrouter.litellm_utils import build_litellm_params
+
+        params = build_litellm_params(
+            api_key="sk-ant-oat01-test-token-value",
+            base_url=None,
+            api_style="anthropic",
+            model="claude-haiku-4-5",
+        )
+        assert params["model"] == "anthropic/claude-haiku-4-5"
+        assert "extra_headers" in params
+        assert params["extra_headers"]["authorization"] == "Bearer sk-ant-oat01-test-token-value"
+        assert params["extra_headers"]["anthropic-beta"] == "oauth-2025-04-20"
+        assert params["extra_headers"]["anthropic-dangerous-direct-browser-access"] == "true"
+
+    def test_anthropic_regular_api_key_no_oauth_headers(self):
+        from lazyrouter.litellm_utils import build_litellm_params
+
+        params = build_litellm_params(
+            api_key="sk-ant-api03-regular-key",
+            base_url=None,
+            api_style="anthropic",
+            model="claude-haiku-4-5",
+        )
+        assert params["model"] == "anthropic/claude-haiku-4-5"
+        assert "extra_headers" not in params
+
+    def test_anthropic_oauth_with_custom_base_url(self):
+        from lazyrouter.litellm_utils import build_litellm_params
+
+        params = build_litellm_params(
+            api_key="sk-ant-oat01-custom-base",
+            base_url="https://my-proxy.example.com",
+            api_style="anthropic",
+            model="claude-opus-4-6",
+        )
+        assert params["api_base"] == "https://my-proxy.example.com"
+        assert params["model"] == "claude-opus-4-6"
+        assert params["extra_headers"]["authorization"] == "Bearer sk-ant-oat01-custom-base"
+        assert params["extra_headers"]["anthropic-beta"] == "oauth-2025-04-20"
