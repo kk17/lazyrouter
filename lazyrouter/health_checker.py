@@ -428,7 +428,16 @@ class HealthChecker:
                 results_by_model[name] = result
                 logger.warning(f"Health check: {name} unhealthy - {err}")
 
-        if router_probe_source_model_name is not None:
+        if is_fixed_mode:
+            router_result = HealthCheckResult(
+                model="fixed",
+                provider="n/a",
+                actual_model="fixed",
+                is_router=True,
+                status="ok",
+                is_healthy=True,
+            )
+        elif router_probe_source_model_name is not None:
             source_result = results_by_model.get(router_probe_source_model_name)
             if source_result is not None:
                 router_result = source_result.model_copy(
