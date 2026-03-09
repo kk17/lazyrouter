@@ -8,6 +8,7 @@ chunks back into Anthropic format.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
@@ -20,18 +21,28 @@ from .anthropic_models import (
 )
 from .models import ChatCompletionRequest, Message
 
+_BILLING_HEADER_RE = re.compile(
+    r"^x-anthropic-billing-header:[^\n]*\n?", re.MULTILINE
+)
+
+
+def _strip_billing_header(text: str) -> str:
+    """Remove x-anthropic-billing-header lines that confuse LiteLLM's
+    Anthropic system-message extraction."""
+    return _BILLING_HEADER_RE.sub("", text).lstrip()
+
 
 def _system_to_string(system: Union[str, List[Any], None]) -> Optional[str]:
     if system is None:
         return None
     if isinstance(system, str):
-        return system
+        return _strip_billing_header(system)
     parts: list[str] = []
     for block in system:
         if isinstance(block, str):
-            parts.append(block)
+            parts.append(_strip_billing_header(block))
         elif isinstance(block, dict) and block.get("type") == "text":
-            parts.append(block.get("text", ""))
+            parts.append(_strip_billing_header(block.get("text", "")))
     return "\n".join(parts) if parts else None
 
 
