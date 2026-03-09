@@ -1,6 +1,7 @@
 """Periodic health checker that benchmarks models and tracks availability"""
 
 import asyncio
+import functools
 import json
 import logging
 import time
@@ -156,6 +157,26 @@ async def check_model_health(
     ttft_unavailable_reason = None
     total_ms = None
     first_event_ms = None
+
+    def create_result(
+        status: str,
+        is_healthy: Optional[bool] = None,
+        error: Optional[str] = None,
+    ) -> HealthCheckResult:
+        return HealthCheckResult(
+            model=name,
+            provider=provider_name,
+            actual_model=actual_model,
+            is_router=is_router,
+            status=status,
+            is_healthy=is_healthy,
+            ttft_ms=ttft_ms,
+            ttft_source=ttft_source,
+            ttft_unavailable_reason=ttft_unavailable_reason,
+            total_ms=total_ms,
+            error=error,
+        )
+
     try:
         t0 = time.monotonic()
         stream = await provider.chat_completion(
@@ -185,17 +206,9 @@ async def check_model_health(
 
         total_ms = round((time.monotonic() - t0) * 1000, 1)
 
-        return HealthCheckResult(
-            model=name,
-            provider=provider_name,
-            actual_model=actual_model,
-            is_router=is_router,
+        return create_result(
             status="ok",
             is_healthy=None,  # Set later in run_check based on latency threshold
-            ttft_ms=ttft_ms,
-            ttft_source=ttft_source,
-            ttft_unavailable_reason=ttft_unavailable_reason,
-            total_ms=total_ms,
         )
     except Exception as stream_error:
         # Some providers/parsers can fail in stream mode even when non-streaming
@@ -208,6 +221,7 @@ async def check_model_health(
             _compact_error(stream_error),
         )
         # Force TTFT fields to match the non-stream fallback source.
+        # This update is visible to the closure create_result below.
         ttft_ms = None
         ttft_source = "unavailable_non_stream"
         ttft_unavailable_reason = _compact_error(stream_error)
@@ -221,30 +235,14 @@ async def check_model_health(
                 max_tokens=BENCH_MAX_TOKENS,
             )
             total_ms = round((time.monotonic() - t0) * 1000, 1)
-            return HealthCheckResult(
-                model=name,
-                provider=provider_name,
-                actual_model=actual_model,
-                is_router=is_router,
+            return create_result(
                 status="ok",
                 is_healthy=None,  # Set later in run_check based on latency threshold
-                ttft_ms=None,
-                ttft_source=ttft_source,
-                ttft_unavailable_reason=ttft_unavailable_reason,
-                total_ms=total_ms,
             )
         except Exception as fallback_error:
-            return HealthCheckResult(
-                model=name,
-                provider=provider_name,
-                actual_model=actual_model,
-                is_router=is_router,
+            return create_result(
                 status="error",
                 is_healthy=False,
-                ttft_ms=ttft_ms,
-                ttft_source=ttft_source,
-                ttft_unavailable_reason=ttft_unavailable_reason,
-                total_ms=total_ms,
                 error=(
                     f"stream probe failed: {_compact_error(stream_error)}; "
                     f"non-stream probe failed: {_compact_error(fallback_error)}"
@@ -331,6 +329,13 @@ class HealthChecker:
         router_model = self.config.router.model
         router_probe_source_model_name: Optional[str] = None
 
+        async def staggered_check(delay: float, coro_factory: Any) -> Any:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            return await coro_factory()
+
+        current_delay = 0.0
+
         for model_name, model_config in self.config.llms.items():
             if (
                 model_config.provider == router_provider_name
@@ -349,13 +354,18 @@ class HealthChecker:
             model_names.append(model_name)
             tasks.append(
                 asyncio.wait_for(
-                    check_model_health(
-                        model_name, provider, model_config.model, model_config.provider
+                    staggered_check(
+                        current_delay,
+                        functools.partial(
+                            check_model_health,
+                            model_name, provider, model_config.model, model_config.provider
+                        )
                     ),
                     timeout=self.hc_config.max_latency_ms / 1000
-                    + 5,  # generous timeout
+                    + 5 + current_delay,  # generous timeout
                 )
             )
+            current_delay += self.hc_config.stagger_seconds
 
         router_task = None
         if router_probe_source_model_name is None:
@@ -366,14 +376,18 @@ class HealthChecker:
                 router_api_key, router_base_url, router_api_style, router_model
             )
             router_task = asyncio.wait_for(
-                check_model_health(
-                    router_model,
-                    router_provider,
-                    router_model,
-                    router_provider_name,
-                    is_router=True,
+                staggered_check(
+                    current_delay,
+                    functools.partial(
+                        check_model_health,
+                        router_model,
+                        router_provider,
+                        router_model,
+                        router_provider_name,
+                        is_router=True,
+                    )
                 ),
-                timeout=self.hc_config.max_latency_ms / 1000 + 5,  # generous timeout
+                timeout=self.hc_config.max_latency_ms / 1000 + 5 + current_delay,  # generous timeout
             )
 
         if router_task is None:
@@ -503,7 +517,7 @@ class HealthChecker:
     async def _run_check_once(self) -> list[HealthCheckResult]:
         """Run model and router probes once, returning model results only.
 
-        Router probe status is stored in ``self.last_router_result`` and is not
+        Router probe status is stored in self.last_router_result and is not
         included in the returned list.
         """
         results, results_by_model, new_healthy, router_result = await self._probe_once()
@@ -619,4 +633,3 @@ class HealthChecker:
         if self._task:
             self._task.cancel()
             self._task = None
-
