@@ -263,7 +263,7 @@ def load_config(
         raise ValueError(f"Invalid configuration: {e}")
 
     # Validate that router provider exists in providers
-    if config.router.provider not in config.providers:
+    if config.router.provider and config.router.provider not in config.providers:
         raise ValueError(
             f"Router provider '{config.router.provider}' not found in providers"
         )
