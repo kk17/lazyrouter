@@ -1,6 +1,9 @@
 """Shared LiteLLM parameter building logic"""
 
+import re
 from typing import Optional
+
+_VERSION_SUFFIX_RE = re.compile(r"/v\d+$")
 
 
 def build_litellm_params(
@@ -51,7 +54,8 @@ def build_litellm_params(
         # OpenAI or OpenAI-compatible (openai-completions, openai-responses)
         if base_url:
             openai_base = base_url.rstrip("/")
-            if not openai_base.endswith("/v1"):
+            # Only append /v1 if the URL doesn't already end with a version path
+            if not _VERSION_SUFFIX_RE.search(openai_base):
                 openai_base += "/v1"
             params["api_base"] = openai_base
         params["model"] = f"openai/{model}"
