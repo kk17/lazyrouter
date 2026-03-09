@@ -22,6 +22,15 @@ def build_litellm_params(
         else:
             params["model"] = f"anthropic/{model}"
 
+    elif style == "github-copilot":
+        copilot_base = base_url.rstrip("/") if base_url else "https://api.githubcopilot.com"
+        params["api_base"] = copilot_base
+        params["model"] = f"openai/{model}"
+        params["extra_headers"] = {
+            "Copilot-Integration-Id": "vscode-chat",
+            "x-initiator": "user",
+        }
+
     elif style == "gemini":
         if base_url:
             # LiteLLM appends /models/{model}:generateContent, so we need /v1beta

@@ -32,6 +32,11 @@ providers:
     base_url: "https://openrouter.ai/api"
     api_style: openai-completions
 
+  github-copilot:
+    api_key: "${GITHUB_TOKEN}"
+    base_url: "https://api.githubcopilot.com"
+    api_style: github-copilot
+
 # Router LLM decides which model to use.
 router:
   provider: gemini
@@ -111,6 +116,33 @@ llms:
     output_price: 2.0
     coding_elo: 1237
     writing_elo: 1431
+
+  copilot-gpt-4o:
+    description: "GPT-4o via GitHub Copilot subscription (included in plan)."
+    provider: github-copilot
+    model: "gpt-4o"
+    input_price: 0.0
+    output_price: 0.0
+    coding_elo: 1380
+    writing_elo: 1430
+
+  copilot-claude-sonnet:
+    description: "Claude 3.5 Sonnet via GitHub Copilot subscription (included in plan)."
+    provider: github-copilot
+    model: "claude-3.5-sonnet"
+    input_price: 0.0
+    output_price: 0.0
+    coding_elo: 1386
+    writing_elo: 1451
+
+  copilot-gemini-flash:
+    description: "Gemini 2.0 Flash via GitHub Copilot subscription (included in plan)."
+    provider: github-copilot
+    model: "gemini-2.0-flash-001"
+    input_price: 0.0
+    output_price: 0.0
+    coding_elo: 1350
+    writing_elo: 1390
 
 context_compression:
   history_trimming: true  # Master switch for deterministic history trimming.
