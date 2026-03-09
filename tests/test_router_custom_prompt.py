@@ -149,13 +149,21 @@ def test_model_description_omits_cacheability_metadata_without_cache_ttl():
     assert "prompt_cache_supported=true" not in desc
 
 
-def test_router_config_rejects_removed_cache_estimation_knobs():
+@pytest.mark.parametrize(
+    "removed_field",
+    [
+        "cache_estimated_minutes_per_message",
+        "cache_create_input_multiplier",
+        "cache_hit_input_multiplier",
+    ],
+)
+def test_router_config_rejects_removed_cache_estimation_knobs(removed_field: str):
     """Removed router cache-estimation knobs should be rejected."""
     with pytest.raises(ValueError) as exc_info:
         RouterConfig(
             provider="test",
             model="test-model",
-            cache_estimated_minutes_per_message=2.0,
+            **{removed_field: 2.0},
         )
 
     assert "Removed router config field" in str(exc_info.value)
@@ -247,7 +255,7 @@ Request: {current_request}"""
         "id": "test-id",
         "choices": [
             {
-                "message": {"content": '{"evaluation": "eval test", "reasoning": "test", "model": "model-a"}'},
+                "message": {"content": '{"reasoning": "test", "model": "model-a"}'},
                 "finish_reason": "stop",
             }
         ],
@@ -303,7 +311,7 @@ def test_router_uses_fallback_backend_when_primary_router_fails():
         "id": "test-id",
         "choices": [
             {
-                "message": {"content": '{"evaluation":"eval ok","reasoning":"fallback ok","model":"model-a"}'},
+                "message": {"content": '{"reasoning":"fallback ok","model":"model-a"}'},
                 "finish_reason": "stop",
             }
         ],
@@ -357,7 +365,7 @@ Request: {current_request}"""
         "id": "test-id",
         "choices": [
             {
-                "message": {"content": '{"evaluation": "eval test", "reasoning": "test", "model": "model-a"}'},
+                "message": {"content": '{"reasoning": "test", "model": "model-a"}'},
                 "finish_reason": "stop",
             }
         ],
