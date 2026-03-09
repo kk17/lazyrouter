@@ -37,8 +37,11 @@ providers:
     base_url: "https://api.githubcopilot.com"
     api_style: github-copilot
 
-# Router LLM decides which model to use.
+# Router configuration.
+# mode: \"auto\" uses a cheap LLM to pick the best model per request.
+# mode: \"fixed\" uses the first healthy model in config order (no LLM call, zero latency).
 router:
+  mode: auto   # \"auto\" or \"fixed\"
   provider: gemini
   model: "gemini-2.5-flash"
   # provider_fallback: openai
@@ -60,6 +63,11 @@ router:
 # - coding_elo: relative coding quality signal (higher is generally better)
 # - writing_elo: relative writing quality signal (higher is generally better)
 # ELO is optional for runtime, but useful for consistent routing preferences.
+#
+# fallback_models: Optional explicit fallback order per model.
+# When a model hits a rate limit, LazyRouter tries these models in order
+# instead of the default ELO-similarity ranking.
+# Example: claude-sonnet can fall back to copilot-claude-sonnet, then gemini-2.5-flash.
 llms:
   gemini-2.5-flash:
     description: "Very fast, cheap, and capable for most conversations and tool calling."
@@ -89,6 +97,7 @@ llms:
     output_price: 15.0
     coding_elo: 1386
     writing_elo: 1451
+    fallback_models: ["copilot-claude-sonnet", "gemini-2.5-flash"]  # Try Copilot then Gemini on rate limit
 
   claude-opus-4-6:
     description: "High-quality model for difficult tasks; use when quality matters most."
@@ -98,6 +107,7 @@ llms:
     output_price: 25.0
     coding_elo: 1569
     writing_elo: 1501
+    fallback_models: ["claude-sonnet-4-5", "copilot-claude-sonnet"]  # Degrade gracefully on rate limit
 
   gpt-4o-mini:
     description: "Fast and cost-effective OpenAI baseline."

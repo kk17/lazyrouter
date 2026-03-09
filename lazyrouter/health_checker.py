@@ -330,10 +330,12 @@ class HealthChecker:
         router_provider_name = self.config.router.provider
         router_model = self.config.router.model
         router_probe_source_model_name: Optional[str] = None
+        is_fixed_mode = self.config.router.mode == "fixed"
 
         for model_name, model_config in self.config.llms.items():
             if (
-                model_config.provider == router_provider_name
+                not is_fixed_mode
+                and model_config.provider == router_provider_name
                 and model_config.model == router_model
                 and router_probe_source_model_name is None
             ):
@@ -358,7 +360,7 @@ class HealthChecker:
             )
 
         router_task = None
-        if router_probe_source_model_name is None:
+        if not is_fixed_mode and router_probe_source_model_name is None and router_provider_name and router_model:
             router_api_key = self.config.get_api_key(router_provider_name)
             router_base_url = self.config.get_base_url(router_provider_name)
             router_api_style = self.config.get_api_style(router_provider_name)

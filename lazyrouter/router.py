@@ -77,7 +77,7 @@ class LLMRouter:
         """
         self.config = config
 
-        # Get routing model configuration
+        # Get routing model configuration (may be None in fixed mode)
         self.routing_model = config.router.model
         self.routing_provider = config.router.provider
         self.routing_fallback_model = config.router.model_fallback

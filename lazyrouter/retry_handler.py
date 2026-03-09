@@ -62,14 +62,29 @@ def select_fallback_models(
     already_tried: Optional[set[str]] = None,
 ) -> List[str]:
     """
-    Select fallback models ordered by ELO similarity to the failed model.
+    Select fallback models. Uses explicit fallback_models list if configured,
+    otherwise falls back to ELO-similarity ordering.
 
-    Prefers models with similar capability (ELO) to maintain quality expectations.
+    Prefers healthy models over unhealthy ones within each ordering strategy.
     """
     if already_tried is None:
         already_tried = set()
 
     failed_config = all_models.get(failed_model)
+
+    # Use explicit fallback list if configured on the failed model
+    if failed_config and failed_config.fallback_models:
+        result = []
+        for name in failed_config.fallback_models:
+            if name == failed_model or name in already_tried:
+                continue
+            if name not in all_models:
+                continue
+            result.append(name)
+            if len(result) >= MAX_FALLBACK_MODELS - 1:
+                break
+        return result
+
     failed_elo = get_model_elo(failed_config) if failed_config else 0
 
     # Get candidate models (healthy first, then unhealthy as last resort)

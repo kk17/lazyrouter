@@ -448,7 +448,7 @@ def create_app(
         """Health check endpoint"""
         return HealthResponse(
             status="ok",
-            router_model=config.router.model,
+            router_model=config.router.model or f"fixed ({config.router.mode})",
             available_models=list(config.llms.keys()),
         )
 

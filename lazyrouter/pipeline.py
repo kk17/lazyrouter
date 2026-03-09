@@ -500,14 +500,25 @@ async def select_model(ctx: RequestContext, health_checker: Any, router: Any) ->
             )
 
         if selected_model is None:
-            routing_result = await router.route(
-                ctx.messages,
-                exclude_models=health_checker.unhealthy_models or None,
-            )
-            selected_model = routing_result.model
-            ctx.routing_result = routing_result
-            ctx.routing_response = routing_result.raw_response
-            ctx.routing_reasoning = routing_result.reasoning
+            if ctx.config.router.mode == "fixed":
+                # Fixed mode: pick first healthy model in config order
+                for name in ctx.config.llms:
+                    if name not in (health_checker.unhealthy_models or set()):
+                        selected_model = name
+                        ctx.router_skipped_reason = "fixed mode"
+                        break
+                if selected_model is None:
+                    selected_model = next(iter(ctx.config.llms))
+                    ctx.router_skipped_reason = "fixed mode (all unhealthy)"
+            else:
+                routing_result = await router.route(
+                    ctx.messages,
+                    exclude_models=health_checker.unhealthy_models or None,
+                )
+                selected_model = routing_result.model
+                ctx.routing_result = routing_result
+                ctx.routing_response = routing_result.raw_response
+                ctx.routing_reasoning = routing_result.reasoning
     else:
         selected_model = ctx.resolved_model
         logger.info("Using specified model: %s", selected_model)

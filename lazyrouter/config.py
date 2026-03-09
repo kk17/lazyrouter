@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from dotenv import find_dotenv, load_dotenv
@@ -34,8 +34,9 @@ class ProviderConfig(BaseModel):
 class RouterConfig(BaseModel):
     """Router configuration"""
 
-    provider: str
-    model: str
+    mode: str = "auto"  # "auto" (LLM-based routing) or "fixed" (priority-ordered, no LLM call)
+    provider: Optional[str] = None
+    model: Optional[str] = None
     provider_fallback: Optional[str] = None
     model_fallback: Optional[str] = None
     temperature: float = 0.0
@@ -59,6 +60,14 @@ class RouterConfig(BaseModel):
     @model_validator(mode="after")
     def validate_router_config(self) -> "RouterConfig":
         """Validate fallback pairing and custom prompt placeholders."""
+        if self.mode not in ("auto", "fixed"):
+            raise ValueError("router.mode must be 'auto' or 'fixed'")
+
+        if self.mode == "auto" and (not self.provider or not self.model):
+            raise ValueError(
+                "router.provider and router.model are required when mode is 'auto'"
+            )
+
         if (self.provider_fallback is None) != (self.model_fallback is None):
             raise ValueError(
                 "router.provider_fallback and router.model_fallback must be set together"
@@ -94,6 +103,7 @@ class ModelConfig(BaseModel):
     cache_ttl: Optional[int] = Field(
         default=None, gt=0
     )  # Cache TTL in minutes (e.g., 5 for Claude prompt caching)
+    fallback_models: Optional[List[str]] = None  # Explicit fallback order (overrides ELO-similarity)
 
 
 class ContextCompressionConfig(BaseModel):
