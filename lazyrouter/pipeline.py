@@ -30,7 +30,6 @@ from .message_utils import (
 from .constants import (
     ANTHROPIC_DUMMY_USER_MESSAGE,
     INITIAL_RETRY_DELAY,
-    MESSAGE_ID_RE,
     PASSTHROUGH_EXCLUDE,
     RETRY_MULTIPLIER,
 )
@@ -41,6 +40,7 @@ from .retry_handler import (
 )
 from .sanitizers import (
     sanitize_messages_for_gemini,
+    stabilize_system_messages_for_caching,
     sanitize_tool_schema_for_anthropic,
     sanitize_tool_schema_for_gemini,
 )
@@ -118,6 +118,10 @@ def _prepare_for_model(
     if api_style == "gemini":
         prep_messages = sanitize_messages_for_gemini(messages)
 
+    # Stabilize dynamic system-prompt message IDs so exact-prefix prompt caches
+    # can survive across repeated turns on providers that support them.
+    prep_messages = stabilize_system_messages_for_caching(prep_messages)
+
     if request.tools:
         tools = request.tools
         if api_style == "anthropic":
@@ -129,21 +133,9 @@ def _prepare_for_model(
         else:
             prep_extra["tools"] = tools
 
-    # For Anthropic: stabilise message_id in system prompt so it doesn't bust the cache,
-    # then ensure at least one non-system message for LiteLLM/Anthropic compatibility.
+    # For Anthropic: ensure at least one non-system message for LiteLLM/Anthropic
+    # compatibility.
     if api_style == "anthropic":
-        new_messages = []
-        for msg in prep_messages:
-            if msg.get("role") == "system":
-                content = msg.get("content", "")
-                if isinstance(content, str) and content:
-                    stabilised = MESSAGE_ID_RE.sub(r'\1"0"', content)
-                    if stabilised != content:
-                        msg = dict(msg)
-                        msg["content"] = stabilised
-            new_messages.append(msg)
-        prep_messages = new_messages
-
         has_non_system = any(
             str(msg.get("role", "")).strip().lower() != "system"
             for msg in prep_messages

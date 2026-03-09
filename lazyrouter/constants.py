@@ -19,9 +19,13 @@ PASSTHROUGH_EXCLUDE = {
     "store",
 }
 
-# Anthropic specific constants (pipeline.py)
+# Prompt-stability constants (pipeline.py / sanitizers.py)
 ANTHROPIC_DUMMY_USER_MESSAGE = {"role": "user", "content": "Please continue."}
 MESSAGE_ID_RE = re.compile(r'("message_id"\s*:\s*)"[^"]*"')
+BRACKET_MESSAGE_ID_RE = re.compile(
+    r"(\[message_id:\s*)[^\]\r\n]+(\])",
+    re.IGNORECASE,
+)
 
 # Retry and fallback defaults (retry_handler.py)
 INITIAL_RETRY_DELAY = 10.0  # seconds
