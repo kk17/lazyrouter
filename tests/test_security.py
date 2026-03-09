@@ -158,6 +158,25 @@ def test_chat_completion_whitespace_only_api_key_config_raises_validation_error(
         _config_with_auth(api_key="   ")
 
 
+def test_chat_completion_strips_configured_api_key_whitespace(monkeypatch):
+    setup_mocks(monkeypatch)
+    app = server_mod.create_app(
+        preloaded_config=_config_with_auth(api_key="  secret-key  ")
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "m_fast",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+            headers={"Authorization": "Bearer secret-key"},
+        )
+
+    assert response.status_code == 200
+
+
 def test_health_endpoints_require_auth_when_api_key_is_configured(monkeypatch):
     setup_mocks(monkeypatch)
     app = server_mod.create_app(preloaded_config=_config_with_auth())
