@@ -12,6 +12,11 @@ import litellm
 from .config import Config
 from .litellm_utils import build_litellm_params
 from .models import HealthCheckResult
+from .retry_handler import (
+    extract_rate_limit_reset_dt,
+    extract_rate_limit_reset_seconds,
+    is_rate_limit_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +239,14 @@ async def check_model_health(
                 total_ms=total_ms,
             )
         except Exception as fallback_error:
+            rate_limit_err = fallback_error if is_rate_limit_error(fallback_error) else (
+                stream_error if is_rate_limit_error(stream_error) else None
+            )
+            rate_limit_seconds: Optional[float] = None
+            rate_limit_reset_at = None
+            if rate_limit_err is not None:
+                rate_limit_seconds = extract_rate_limit_reset_seconds(rate_limit_err)
+                rate_limit_reset_at = extract_rate_limit_reset_dt(rate_limit_err)
             return HealthCheckResult(
                 model=name,
                 provider=provider_name,
@@ -249,6 +262,8 @@ async def check_model_health(
                     f"stream probe failed: {_compact_error(stream_error)}; "
                     f"non-stream probe failed: {_compact_error(fallback_error)}"
                 ),
+                rate_limit_reset_seconds=rate_limit_seconds,
+                rate_limit_reset_at=rate_limit_reset_at,
             )
 
 
@@ -270,11 +285,50 @@ class HealthChecker:
         self._activity_event = asyncio.Event()
         self._last_request_at = time.monotonic()
         self._idle_mode_active = False
+        self._rate_limited_until: Dict[str, float] = {}  # model -> monotonic reset time
 
     @property
     def unhealthy_models(self) -> Set[str]:
-        """Return set of models that failed the last health check."""
+        """Return set of models that failed the last health check or are rate-limited."""
+        now = time.monotonic()
+        for model in list(self._rate_limited_until):
+            if self._rate_limited_until[model] <= now:
+                del self._rate_limited_until[model]
+                self.healthy_models.add(model)
+                logger.info(
+                    "[rate-limit] model %s rate limit expired, restored to healthy", model
+                )
         return set(self.config.llms.keys()) - self.healthy_models
+
+    def mark_rate_limited(
+        self,
+        model: str,
+        seconds_until_reset: float,
+        reset_at_dt: Optional[datetime] = None,
+    ) -> None:
+        """Remove a model from routing until its rate limit resets."""
+        prev = self._rate_limited_until.get(model)
+        monotonic_reset = time.monotonic() + seconds_until_reset
+        if prev and prev > monotonic_reset:
+            return
+        self._rate_limited_until[model] = monotonic_reset
+        self.healthy_models.discard(model)
+        if reset_at_dt is not None:
+            reset_str = reset_at_dt.astimezone().strftime("%H:%M:%S %Z")
+            source = "per API"
+        else:
+            reset_wall = datetime.fromtimestamp(
+                time.time() + seconds_until_reset, tz=timezone.utc
+            ).astimezone()
+            reset_str = reset_wall.strftime("%H:%M:%S %Z")
+            source = "estimated"
+        logger.warning(
+            "[rate-limit] model %s paused for %.0fs (resets %s %s)",
+            model,
+            seconds_until_reset,
+            reset_str,
+            source,
+        )
 
     def _seconds_since_last_request(self) -> float:
         """Return elapsed seconds since the last chat completion request."""
@@ -412,6 +466,12 @@ class HealthChecker:
                         )
                     )
                     logger.warning(f"Health check: {name} unhealthy - {reason}")
+                    if r.rate_limit_reset_seconds is not None:
+                        self.mark_rate_limited(
+                            name,
+                            r.rate_limit_reset_seconds,
+                            reset_at_dt=r.rate_limit_reset_at,
+                        )
             else:
                 err = "Timed out" if isinstance(r, asyncio.TimeoutError) else str(r)
                 mc = self.config.llms[name]

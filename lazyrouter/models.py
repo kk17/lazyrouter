@@ -1,5 +1,6 @@
 """Pydantic models for OpenAI-compatible API requests and responses"""
 
+from datetime import datetime
 from typing import Any, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict
@@ -120,6 +121,8 @@ class HealthCheckResult(BaseModel):
     ttft_unavailable_reason: Optional[str] = None
     total_ms: Optional[float] = None
     error: Optional[str] = None
+    rate_limit_reset_seconds: Optional[float] = None
+    rate_limit_reset_at: Optional[datetime] = None
 
 
 class HealthStatusResponse(BaseModel):

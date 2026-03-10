@@ -32,6 +32,9 @@ from .model_normalization import normalize_requested_model
 from .retry_handler import (
     INITIAL_RETRY_DELAY,
     RETRY_MULTIPLIER,
+    extract_rate_limit_reset_dt,
+    extract_rate_limit_reset_seconds,
+    is_rate_limit_error,
     is_retryable_error,
     select_fallback_models,
 )
@@ -679,14 +682,13 @@ async def _backoff_retry_loop(
             except Exception as e:
                 if not is_retryable_error(e):
                     raise
+                if is_rate_limit_error(e):
+                    health_checker.mark_rate_limited(
+                        try_model,
+                        extract_rate_limit_reset_seconds(e),
+                        reset_at_dt=extract_rate_limit_reset_dt(e),
+                    )
                 continue
-
-        elapsed = time.monotonic() - start_time
-        delay = min(delay * RETRY_MULTIPLIER, max_wait - elapsed)
-        if delay <= 0:
-            break
-
-    return None
 
 
 async def call_with_fallback(
@@ -744,6 +746,12 @@ async def call_with_fallback(
         except Exception as e:
             last_error = e
             if is_retryable_error(e):
+                if is_rate_limit_error(e):
+                    health_checker.mark_rate_limited(
+                        try_model,
+                        extract_rate_limit_reset_seconds(e),
+                        reset_at_dt=extract_rate_limit_reset_dt(e),
+                    )
                 logger.warning(
                     "[fallback] model %s failed with retryable error: %s",
                     try_model,

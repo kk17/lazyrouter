@@ -1,7 +1,13 @@
 """Tests for retry handler functionality"""
 
+from datetime import datetime, timezone
+
+import httpx
+
 from lazyrouter.config import ModelConfig
 from lazyrouter.retry_handler import (
+    extract_rate_limit_reset_dt,
+    extract_rate_limit_reset_seconds,
     get_model_elo,
     is_retryable_error,
     select_fallback_models,
@@ -89,6 +95,47 @@ class TestGetModelElo:
             description="test",
         )
         assert get_model_elo(cfg) == 0
+
+
+class TestExtractRateLimitReset:
+    """Tests for extracting reset timestamps from nested provider exceptions."""
+
+    def test_extracts_unified_reset_from_nested_context(self):
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        response = httpx.Response(
+            429,
+            headers={
+                "anthropic-ratelimit-unified-reset": "1773172800",
+                "retry-after": "3969",
+            },
+            request=request,
+        )
+        root = httpx.HTTPStatusError("too many requests", request=request, response=response)
+        middle = Exception("anthropic wrapper")
+        top = Exception("litellm wrapper")
+        middle.__context__ = root
+        top.__context__ = middle
+
+        reset_dt = extract_rate_limit_reset_dt(top)
+
+        assert reset_dt == datetime.fromtimestamp(1773172800, tz=timezone.utc)
+
+    def test_extracts_seconds_from_nested_context(self):
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        response = httpx.Response(
+            429,
+            headers={"retry-after": "90"},
+            request=request,
+        )
+        root = httpx.HTTPStatusError("too many requests", request=request, response=response)
+        middle = Exception("anthropic wrapper")
+        top = Exception("litellm wrapper")
+        middle.__context__ = root
+        top.__context__ = middle
+
+        seconds = extract_rate_limit_reset_seconds(top)
+
+        assert 85 <= seconds <= 90
 
 
 class TestSelectFallbackModels:
