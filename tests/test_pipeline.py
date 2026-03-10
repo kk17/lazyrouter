@@ -17,6 +17,7 @@ from lazyrouter.config import (
 from lazyrouter.models import ChatCompletionRequest
 from lazyrouter.pipeline import (
     RequestContext,
+    call_with_fallback,
     compress_context,
     normalize_messages,
     prepare_provider,
@@ -623,3 +624,29 @@ def test_select_model_skips_router_on_tool_continuation():
     assert ctx.selected_model == "m2"
     assert ctx.router_skipped_reason is not None
     assert "cached" in ctx.router_skipped_reason
+
+
+def test_call_with_fallback_skips_explicit_model_when_already_unhealthy(monkeypatch):
+    import lazyrouter.pipeline as pipeline_mod
+
+    req = _request(model="m1")
+    ctx = _ctx(request=req)
+    normalize_messages(ctx)
+    ctx.selected_model = "m1"
+    ctx.model_config = ctx.config.llms["m1"]
+
+    attempted_models = []
+
+    async def fake_call(**kwargs):
+        attempted_models.append(kwargs["selected_model"])
+        return {"id": "resp-1"}
+
+    monkeypatch.setattr(pipeline_mod, "call_router_with_gemini_fallback", fake_call)
+
+    hc = _FakeHealthChecker(healthy={"m2"}, unhealthy={"m1"})
+
+    result = asyncio.run(call_with_fallback(ctx, object(), hc))
+
+    assert result == {"id": "resp-1"}
+    assert attempted_models == ["m2"]
+    assert ctx.selected_model == "m2"

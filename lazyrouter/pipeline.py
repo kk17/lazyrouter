@@ -335,6 +335,33 @@ def _model_elo_score(model_config: "ModelConfig") -> int:
     return max(model_config.coding_elo or 0, model_config.writing_elo or 0)
 
 
+def _build_models_to_try(
+    original_model: str,
+    all_models: dict[str, "ModelConfig"],
+    healthy_models: set[str],
+    already_tried: set[str],
+) -> list[str]:
+    """Build ordered candidates, skipping an original model already marked unhealthy."""
+    models_to_try: list[str] = []
+    if original_model in healthy_models:
+        models_to_try.append(original_model)
+    else:
+        logger.info(
+            "[fallback] skipping unhealthy model=%s and moving to fallback candidates",
+            original_model,
+        )
+
+    models_to_try.extend(
+        select_fallback_models(
+            original_model,
+            all_models,
+            healthy_models=healthy_models,
+            already_tried=already_tried,
+        )
+    )
+    return models_to_try
+
+
 async def _handle_cache_aware_routing(
     ctx: RequestContext,
     health_checker: Any,
@@ -645,12 +672,12 @@ async def _backoff_retry_loop(
 
         await health_checker.run_check()
 
-        healthy_set = health_checker.healthy_models
-        retry_models = [original_model] + select_fallback_models(
+        healthy_set = set(health_checker.healthy_models)
+        retry_models = _build_models_to_try(
             original_model,
             ctx.config.llms,
-            healthy_models=healthy_set,
-            already_tried=tried_models,
+            healthy_set,
+            tried_models,
         )
         tried_models.clear()
 
@@ -697,13 +724,13 @@ async def call_with_fallback(
     """Call model with ELO-similar fallback and backoff retry. Mutates ctx on fallback. Returns raw response."""
     tried_models: set = set()
     original_model = ctx.selected_model
-    healthy_set = health_checker.healthy_models
+    healthy_set = set(health_checker.healthy_models)
 
-    models_to_try = [ctx.selected_model] + select_fallback_models(
+    models_to_try = _build_models_to_try(
         ctx.selected_model,
         ctx.config.llms,
-        healthy_models=healthy_set,
-        already_tried=tried_models,
+        healthy_set,
+        tried_models,
     )
 
     last_error = None
