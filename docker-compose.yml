@@ -1,0 +1,15 @@
+services:
+  lazyrouter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: lazyrouter:latest
+    container_name: lazyrouter
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    command: ["uv", "run", "python", "main.py", "--config", "config.yaml", "--host", "0.0.0.0", "--port", "8000"]
