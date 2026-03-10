@@ -88,6 +88,23 @@ def test_chat_completion_valid_auth_succeeds(monkeypatch):
 
     assert response.status_code == 200
 
+
+def test_chat_completion_alias_valid_auth_succeeds(monkeypatch):
+    setup_mocks(monkeypatch)
+    app = server_mod.create_app(preloaded_config=_config_with_auth())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat/completions",
+            json={
+                "model": "m_fast",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+            headers={"Authorization": "Bearer secret-key"},
+        )
+
+    assert response.status_code == 200
+
 def test_chat_completion_invalid_auth_fails(monkeypatch):
     setup_mocks(monkeypatch)
     app = server_mod.create_app(preloaded_config=_config_with_auth())
@@ -105,6 +122,22 @@ def test_chat_completion_invalid_auth_fails(monkeypatch):
 
     assert response.status_code == 401
     assert "Invalid API Key" in response.json()["detail"]
+
+
+def test_chat_completion_alias_no_auth_fails(monkeypatch):
+    setup_mocks(monkeypatch)
+    app = server_mod.create_app(preloaded_config=_config_with_auth())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat/completions",
+            json={
+                "model": "m_fast",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+
+    assert response.status_code == 401
 
 def test_chat_completion_no_api_key_config_allows_unauthenticated(monkeypatch):
     setup_mocks(monkeypatch)

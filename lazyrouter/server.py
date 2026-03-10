@@ -542,6 +542,7 @@ def create_app(
         return _build_health_status_response()
 
     @app.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
+    @app.post("/chat/completions", dependencies=[Depends(verify_api_key)])
     async def chat_completions(request: ChatCompletionRequest):
         """Chat completions endpoint (OpenAI-compatible)
 
