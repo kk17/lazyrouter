@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Message(BaseModel):
@@ -125,12 +125,26 @@ class HealthCheckResult(BaseModel):
     rate_limit_reset_at: Optional[datetime] = None
 
 
+class ModelHealthStatus(BaseModel):
+    """Centralized model health status shared by probes and invocation flow"""
+
+    model: str
+    is_healthy: bool
+    source: Optional[str] = None
+    last_error: Optional[str] = None
+    rate_limit_reset_at: Optional[datetime] = None
+    blocked_until: Optional[datetime] = None
+    updated_at: Optional[str] = None
+
+
 class HealthStatusResponse(BaseModel):
     """Current health checker status and latest results"""
 
+    mode: str
     interval: int
     max_latency_ms: int
     last_check: Optional[str] = None
     healthy_models: List[str]
     unhealthy_models: List[str]
     results: List[HealthCheckResult]
+    model_statuses: List[ModelHealthStatus] = Field(default_factory=list)

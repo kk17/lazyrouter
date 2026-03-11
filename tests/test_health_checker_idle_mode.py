@@ -73,3 +73,43 @@ def test_is_idle_switches_based_on_last_request_time():
 
     checker._last_request_at = time.monotonic()
     assert checker._is_idle() is False
+
+
+def test_note_request_skips_pre_route_check_in_on_start_mode(monkeypatch):
+    cfg = _config().model_copy(update={"health_check": HealthCheckConfig(mode="on-start")})
+    checker = HealthChecker(cfg)
+    checker._last_request_at = time.monotonic() - 20
+    calls = {"count": 0}
+
+    async def _fake_run_check():
+        calls["count"] += 1
+        return []
+
+    monkeypatch.setattr(checker, "run_check", _fake_run_check)
+
+    did_run = asyncio.run(checker.note_request_and_maybe_run_cold_boot_check())
+
+    assert did_run is False
+    assert calls["count"] == 0
+
+
+def test_start_runs_single_probe_in_on_start_mode(monkeypatch):
+    cfg = _config().model_copy(update={"health_check": HealthCheckConfig(mode="on-start")})
+    checker = HealthChecker(cfg)
+    calls = {"count": 0}
+
+    async def _fake_run_check():
+        calls["count"] += 1
+        return []
+
+    monkeypatch.setattr(checker, "run_check", _fake_run_check)
+
+    async def _run_once():
+        checker.start()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        checker.stop()
+
+    asyncio.run(_run_once())
+
+    assert calls["count"] == 1

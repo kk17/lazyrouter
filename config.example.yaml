@@ -162,6 +162,12 @@ context_compression:
   skip_router_on_tool_results: true  # Reuse previous selected model on tool-result follow-ups.
 
 health_check:
+  mode: periodical      # periodical (default) or on-start (run once at service boot)
+  # Optional: probe only representative aliases per provider to reduce rate-limit usage.
+  # Value can be a single alias string or a list of aliases.
+  probe_models_by_provider:
+    anthropic: "claude-sonnet-4-5"
+    github-copilot: ["copilot-gpt-4o", "copilot-claude-sonnet"]
   interval: 300          # active interval in seconds while requests are flowing (default: 300)
   idle_after_seconds: 600  # after this much inactivity, pause background checks (default: 300)
   max_latency_ms: 15000  # models slower than this are unhealthy (default: 10000)

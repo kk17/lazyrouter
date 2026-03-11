@@ -11,7 +11,7 @@ import litellm
 
 from .config import Config
 from .litellm_utils import build_litellm_params
-from .models import HealthCheckResult
+from .models import HealthCheckResult, ModelHealthStatus
 from .retry_handler import (
     extract_rate_limit_reset_dt,
     extract_rate_limit_reset_seconds,
@@ -273,7 +273,7 @@ class HealthChecker:
     def __init__(self, config: Config):
         self.config = config
         self.hc_config = config.health_check
-        self.healthy_models: Set[str] = set(
+        self._healthy_models: Set[str] = set(
             config.llms.keys()
         )  # assume all healthy at start
         self.last_results: Dict[str, HealthCheckResult] = {}
@@ -286,19 +286,107 @@ class HealthChecker:
         self._last_request_at = time.monotonic()
         self._idle_mode_active = False
         self._rate_limited_until: Dict[str, float] = {}  # model -> monotonic reset time
+        self._rate_limited_until_wall: Dict[str, datetime] = {}
+        now_iso = datetime.now(timezone.utc).isoformat()
+        self._model_statuses: Dict[str, ModelHealthStatus] = {
+            model_name: ModelHealthStatus(
+                model=model_name,
+                is_healthy=True,
+                source="bootstrap",
+                updated_at=now_iso,
+            )
+            for model_name in config.llms.keys()
+        }
+        self._provider_probe_models = self._build_provider_probe_models()
+
+    def _build_provider_probe_models(self) -> Dict[str, List[str]]:
+        """Resolve provider probe aliases to configured model names."""
+        configured = self.hc_config.probe_models_by_provider or {}
+        if not configured:
+            return {}
+
+        by_provider: Dict[str, List[str]] = {}
+        for provider_name, aliases in configured.items():
+            resolved: List[str] = []
+            for alias in aliases:
+                model_cfg = self.config.llms.get(alias)
+                if model_cfg is None:
+                    logger.warning(
+                        "[health-check] ignoring unknown probe model alias '%s' for provider '%s'",
+                        alias,
+                        provider_name,
+                    )
+                    continue
+                if model_cfg.provider != provider_name:
+                    logger.warning(
+                        "[health-check] ignoring probe alias '%s': provider mismatch (expected %s, got %s)",
+                        alias,
+                        provider_name,
+                        model_cfg.provider,
+                    )
+                    continue
+                if alias not in resolved:
+                    resolved.append(alias)
+            if resolved:
+                by_provider[provider_name] = resolved
+        return by_provider
+
+    @property
+    def healthy_models(self) -> Set[str]:
+        """Return current healthy model set, syncing expired rate-limit blocks."""
+        self._sync_rate_limited_models()
+        return set(self._healthy_models)
+
+    @healthy_models.setter
+    def healthy_models(self, value: Set[str]) -> None:
+        self._healthy_models = set(value)
+
+    def _set_model_status(
+        self,
+        model: str,
+        is_healthy: bool,
+        source: str,
+        last_error: Optional[str] = None,
+        rate_limit_reset_at: Optional[datetime] = None,
+        blocked_until: Optional[datetime] = None,
+    ) -> None:
+        self._model_statuses[model] = ModelHealthStatus(
+            model=model,
+            is_healthy=is_healthy,
+            source=source,
+            last_error=last_error,
+            rate_limit_reset_at=rate_limit_reset_at,
+            blocked_until=blocked_until,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def _sync_rate_limited_models(self) -> None:
+        """Restore models whose rate-limit windows have expired."""
+        now_mono = time.monotonic()
+        for model in list(self._rate_limited_until):
+            if self._rate_limited_until[model] <= now_mono:
+                del self._rate_limited_until[model]
+                self._rate_limited_until_wall.pop(model, None)
+                self._healthy_models.add(model)
+                self._set_model_status(model, True, source="rate-limit-expired")
+                logger.info(
+                    "[rate-limit] model %s rate limit expired, restored to healthy", model
+                )
+
+    def _is_rate_limited(self, model: str) -> bool:
+        self._sync_rate_limited_models()
+        return model in self._rate_limited_until
+
+    def get_model_health_statuses(self) -> Dict[str, ModelHealthStatus]:
+        """Return the centralized health status for all configured models."""
+        self._sync_rate_limited_models()
+        return {name: status.model_copy() for name, status in self._model_statuses.items()}
 
     @property
     def unhealthy_models(self) -> Set[str]:
         """Return set of models that failed the last health check or are rate-limited."""
-        now = time.monotonic()
-        for model in list(self._rate_limited_until):
-            if self._rate_limited_until[model] <= now:
-                del self._rate_limited_until[model]
-                self.healthy_models.add(model)
-                logger.info(
-                    "[rate-limit] model %s rate limit expired, restored to healthy", model
-                )
-        return set(self.config.llms.keys()) - self.healthy_models
+        self._sync_rate_limited_models()
+        return set(self.config.llms.keys()) - self._healthy_models
 
     def mark_rate_limited(
         self,
@@ -312,8 +400,22 @@ class HealthChecker:
         if prev and prev > monotonic_reset:
             return
         self._rate_limited_until[model] = monotonic_reset
-        self.healthy_models.discard(model)
-        if reset_at_dt is not None:
+        exact_reset_from_api = reset_at_dt is not None
+        if reset_at_dt is None:
+            reset_at_dt = datetime.fromtimestamp(
+                time.time() + seconds_until_reset, tz=timezone.utc
+            )
+        self._rate_limited_until_wall[model] = reset_at_dt
+        self._healthy_models.discard(model)
+        self._set_model_status(
+            model,
+            is_healthy=False,
+            source="invocation-rate-limit",
+            last_error="rate_limit",
+            rate_limit_reset_at=reset_at_dt,
+            blocked_until=reset_at_dt,
+        )
+        if exact_reset_from_api:
             reset_str = reset_at_dt.astimezone().strftime("%H:%M:%S %Z")
             source = "per API"
         else:
@@ -340,6 +442,11 @@ class HealthChecker:
 
     async def note_request_and_maybe_run_cold_boot_check(self) -> bool:
         """Mark request activity and run a health check when resuming from idle."""
+        if self.hc_config.mode == "on-start":
+            async with self._activity_lock:
+                self._last_request_at = time.monotonic()
+            return False
+
         should_check = False
         idle_for = 0.0
 
@@ -381,6 +488,11 @@ class HealthChecker:
         """Probe all configured models and router once."""
         tasks = []
         model_names = []
+        precomputed_results: Dict[str, HealthCheckResult] = {}
+        mirrored_models: Dict[str, str] = {}
+        provider_probe_order: Dict[str, List[str]] = {}
+        for model_name, model_config in self.config.llms.items():
+            provider_probe_order.setdefault(model_config.provider, []).append(model_name)
         router_provider_name = self.config.router.provider
         router_model = self.config.router.model
         router_probe_source_model_name: Optional[str] = None
@@ -401,6 +513,28 @@ class HealthChecker:
 
             # Create LiteLLM wrapper
             provider = LiteLLMWrapper(api_key, base_url, api_style, model_config.model)
+
+            if self._is_rate_limited(model_name):
+                reset_at = self._rate_limited_until_wall.get(model_name)
+                precomputed_results[model_name] = HealthCheckResult(
+                    model=model_name,
+                    provider=model_config.provider,
+                    actual_model=model_config.model,
+                    is_router=False,
+                    status="error",
+                    is_healthy=False,
+                    error="Model is paused due to rate-limit until reset",
+                    rate_limit_reset_at=reset_at,
+                )
+                continue
+
+            configured_probes = self._provider_probe_models.get(model_config.provider)
+            if configured_probes is not None and model_name not in configured_probes:
+                representative = configured_probes[0] if configured_probes else None
+                if representative is None:
+                    representative = provider_probe_order[model_config.provider][0]
+                mirrored_models[model_name] = representative
+                continue
 
             model_names.append(model_name)
             tasks.append(
@@ -440,8 +574,8 @@ class HealthChecker:
             raw_results = gathered[:-1]
             raw_router_result = gathered[-1]
 
-        results = []
-        results_by_model: Dict[str, HealthCheckResult] = {}
+        results = list(precomputed_results.values())
+        results_by_model: Dict[str, HealthCheckResult] = dict(precomputed_results)
         new_healthy = set()
         for i, r in enumerate(raw_results):
             name = model_names[i]
@@ -455,6 +589,7 @@ class HealthChecker:
 
                 if is_healthy:
                     new_healthy.add(name)
+                    self._set_model_status(name, True, source="health-check")
                 else:
                     reason = (
                         r.error
@@ -472,6 +607,13 @@ class HealthChecker:
                             r.rate_limit_reset_seconds,
                             reset_at_dt=r.rate_limit_reset_at,
                         )
+                    else:
+                        self._set_model_status(
+                            name,
+                            False,
+                            source="health-check",
+                            last_error=reason,
+                        )
             else:
                 err = "Timed out" if isinstance(r, asyncio.TimeoutError) else str(r)
                 mc = self.config.llms[name]
@@ -487,6 +629,77 @@ class HealthChecker:
                 results.append(result)
                 results_by_model[name] = result
                 logger.warning(f"Health check: {name} unhealthy - {err}")
+                self._set_model_status(
+                    name,
+                    False,
+                    source="health-check",
+                    last_error=err,
+                )
+
+        for model_name, representative in mirrored_models.items():
+            representative_result = results_by_model.get(representative)
+            model_cfg = self.config.llms[model_name]
+            if representative_result is None:
+                mirrored_result = HealthCheckResult(
+                    model=model_name,
+                    provider=model_cfg.provider,
+                    actual_model=model_cfg.model,
+                    is_router=False,
+                    status="error",
+                    is_healthy=False,
+                    error=(
+                        f"Representative probe result unavailable: {representative}"
+                    ),
+                )
+                results.append(mirrored_result)
+                results_by_model[model_name] = mirrored_result
+                self._set_model_status(
+                    model_name,
+                    False,
+                    source="health-check-mirror",
+                    last_error=mirrored_result.error,
+                )
+                continue
+
+            mirrored_result = representative_result.model_copy(
+                update={
+                    "model": model_name,
+                    "provider": model_cfg.provider,
+                    "actual_model": model_cfg.model,
+                    "is_router": False,
+                    "error": representative_result.error,
+                }
+            )
+            results.append(mirrored_result)
+            results_by_model[model_name] = mirrored_result
+            if mirrored_result.is_healthy:
+                new_healthy.add(model_name)
+                self._set_model_status(model_name, True, source="health-check-mirror")
+            else:
+                self._set_model_status(
+                    model_name,
+                    False,
+                    source="health-check-mirror",
+                    last_error=mirrored_result.error,
+                    rate_limit_reset_at=mirrored_result.rate_limit_reset_at,
+                    blocked_until=mirrored_result.rate_limit_reset_at,
+                )
+                if mirrored_result.rate_limit_reset_seconds is not None:
+                    self.mark_rate_limited(
+                        model_name,
+                        mirrored_result.rate_limit_reset_seconds,
+                        reset_at_dt=mirrored_result.rate_limit_reset_at,
+                    )
+
+        for model_name, precomputed in precomputed_results.items():
+            self._set_model_status(
+                model_name,
+                False,
+                source="health-check-skipped",
+                last_error=precomputed.error,
+                rate_limit_reset_at=precomputed.rate_limit_reset_at,
+                blocked_until=precomputed.rate_limit_reset_at,
+            )
 
         if is_fixed_mode:
             router_result = HealthCheckResult(
@@ -616,9 +829,9 @@ class HealthChecker:
         if not new_healthy:
             logger.error("Health check: ALL models unhealthy; keeping none available")
 
-        if new_healthy != self.healthy_models:
-            added = new_healthy - self.healthy_models
-            removed = self.healthy_models - new_healthy
+        if new_healthy != self._healthy_models:
+            added = new_healthy - self._healthy_models
+            removed = self._healthy_models - new_healthy
             if added:
                 logger.info(f"Health check: models recovered: {added}")
             if removed:
@@ -626,7 +839,7 @@ class HealthChecker:
 
         self.last_results = results_by_model
         self.last_router_result = router_result
-        self.healthy_models = new_healthy
+        self._healthy_models = new_healthy
         self.last_check = datetime.now(timezone.utc).isoformat()
         router_health = (
             "unknown"
@@ -671,10 +884,24 @@ class HealthChecker:
             except Exception as e:
                 logger.error(f"Health check failed: {e}")
 
+    async def _run_startup_check_once(self):
+        """Run exactly one health check at startup."""
+        try:
+            await self.run_check()
+        except Exception as e:
+            logger.error(f"Startup health check failed: {e}")
+
     def start(self):
         """Start the background health check loop."""
         self._last_request_at = time.monotonic()
         self._activity_event.clear()
+        if self.hc_config.mode == "on-start":
+            logger.info(
+                "Starting health checks in on-start mode (single startup probe only)"
+            )
+            self._task = asyncio.create_task(self._run_startup_check_once())
+            return
+
         logger.info(
             f"Starting health checks every {self.hc_config.interval}s "
             f"(max_latency={self.hc_config.max_latency_ms}ms)"

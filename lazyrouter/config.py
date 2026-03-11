@@ -4,11 +4,11 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import yaml
 from dotenv import find_dotenv, load_dotenv
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -150,11 +150,36 @@ class ContextCompressionConfig(BaseModel):
 class HealthCheckConfig(BaseModel):
     """Periodic health check settings"""
 
+    mode: Literal["periodical", "on-start"] = "periodical"
+    probe_models_by_provider: Dict[str, List[str]] = Field(default_factory=dict)
     interval: int = 300  # seconds between checks
     max_latency_ms: int = 10000  # models slower than this are excluded
     idle_after_seconds: int = (
         300  # pause background checks after this many seconds without chat traffic
     )
+
+    @field_validator("probe_models_by_provider", mode="before")
+    @classmethod
+    def normalize_probe_models_by_provider(cls, value: Any) -> Dict[str, List[str]]:
+        """Allow provider probe models to be specified as either string or list."""
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("health_check.probe_models_by_provider must be a mapping")
+
+        normalized: Dict[str, List[str]] = {}
+        for provider, models in value.items():
+            if isinstance(models, str):
+                model_list = [models]
+            elif isinstance(models, list):
+                model_list = [m for m in models if isinstance(m, str) and m.strip()]
+            else:
+                raise ValueError(
+                    "health_check.probe_models_by_provider values must be string or list of strings"
+                )
+            if model_list:
+                normalized[str(provider)] = model_list
+        return normalized
 
     @model_validator(mode="after")
     def validate_intervals(self) -> "HealthCheckConfig":

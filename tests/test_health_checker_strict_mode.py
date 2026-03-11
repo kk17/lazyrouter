@@ -142,3 +142,106 @@ def test_health_checker_reuses_matching_llm_probe_for_router(monkeypatch):
     assert checker.last_router_result is not None
     assert checker.last_router_result.is_router is True
     assert checker.last_router_result.actual_model == "model-one"
+
+
+def test_mark_rate_limited_updates_shared_model_status():
+    checker = hc_mod.HealthChecker(_config())
+
+    checker.mark_rate_limited("m1", seconds_until_reset=45)
+
+    statuses = checker.get_model_health_statuses()
+    assert "m1" in statuses
+    assert statuses["m1"].is_healthy is False
+    assert statuses["m1"].rate_limit_reset_at is not None
+    assert statuses["m1"].blocked_until is not None
+    assert statuses["m1"].source == "invocation-rate-limit"
+
+
+def test_representative_probe_single_model_mirrors_provider_status(monkeypatch):
+    calls = []
+
+    async def _fake_bench(*args, **kwargs):
+        calls.append(args[0])
+        return HealthCheckResult(
+            model=args[0],
+            provider=args[3],
+            actual_model=args[2],
+            is_router=bool(kwargs.get("is_router", False)),
+            status="ok",
+            total_ms=5.0,
+        )
+
+    monkeypatch.setattr(hc_mod, "check_model_health", _fake_bench)
+
+    cfg = Config(
+        serve=ServeConfig(),
+        router=RouterConfig(provider="p1", model="model-one"),
+        providers={"p1": ProviderConfig(api_key="test-key", api_style="openai")},
+        llms={
+            "m1": ModelConfig(provider="p1", model="model-one", description="one"),
+            "m2": ModelConfig(provider="p1", model="model-two", description="two"),
+            "m3": ModelConfig(provider="p1", model="model-three", description="three"),
+        },
+        health_check=HealthCheckConfig(
+            probe_models_by_provider={"p1": "m1"},
+            interval=300,
+            max_latency_ms=10000,
+        ),
+    )
+
+    checker = hc_mod.HealthChecker(cfg)
+    asyncio.run(checker.run_check())
+
+    assert calls == ["m1"]
+    assert checker.healthy_models == {"m1", "m2", "m3"}
+    assert checker.last_results["m2"].status == "ok"
+    assert checker.last_results["m3"].status == "ok"
+
+
+def test_representative_probe_multi_model_per_provider(monkeypatch):
+    calls = []
+
+    async def _fake_bench(*args, **kwargs):
+        calls.append(args[0])
+        model_name = args[0]
+        if model_name == "m2":
+            return HealthCheckResult(
+                model=model_name,
+                provider=args[3],
+                actual_model=args[2],
+                status="error",
+                is_healthy=False,
+                error="probe failed",
+            )
+        return HealthCheckResult(
+            model=model_name,
+            provider=args[3],
+            actual_model=args[2],
+            status="ok",
+            total_ms=6.0,
+        )
+
+    monkeypatch.setattr(hc_mod, "check_model_health", _fake_bench)
+
+    cfg = Config(
+        serve=ServeConfig(),
+        router=RouterConfig(provider="p1", model="model-one"),
+        providers={"p1": ProviderConfig(api_key="test-key", api_style="openai")},
+        llms={
+            "m1": ModelConfig(provider="p1", model="model-one", description="one"),
+            "m2": ModelConfig(provider="p1", model="model-two", description="two"),
+            "m3": ModelConfig(provider="p1", model="model-three", description="three"),
+        },
+        health_check=HealthCheckConfig(
+            probe_models_by_provider={"p1": ["m1", "m2"]},
+            interval=300,
+            max_latency_ms=10000,
+        ),
+    )
+
+    checker = hc_mod.HealthChecker(cfg)
+    asyncio.run(checker.run_check())
+
+    assert set(calls) == {"m1", "m2"}
+    assert "m3" in checker.healthy_models
+    assert checker.last_results["m3"].status == "ok"

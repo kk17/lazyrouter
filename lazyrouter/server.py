@@ -528,12 +528,17 @@ def create_app(
             results.append(health_checker.last_router_result)
 
         return HealthStatusResponse(
+            mode=config.health_check.mode,
             interval=config.health_check.interval,
             max_latency_ms=config.health_check.max_latency_ms,
             last_check=health_checker.last_check,
             healthy_models=sorted(health_checker.healthy_models),
             unhealthy_models=sorted(health_checker.unhealthy_models),
             results=results,
+            model_statuses=sorted(
+                health_checker.get_model_health_statuses().values(),
+                key=lambda status: status.model,
+            ),
         )
 
     @app.get("/v1/health-status", response_model=HealthStatusResponse)
