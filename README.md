@@ -167,7 +167,7 @@ Configure in `config.yaml`:
 ```yaml
 providers:
   github-copilot:
-    api_key: "${GITHUB_TOKEN}"
+    api_key: "${GITHUB_COPILOT_AUTH_TOKEN}"
     base_url: "https://api.githubcopilot.com"
     api_style: github-copilot
 
