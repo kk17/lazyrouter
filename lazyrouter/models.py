@@ -88,6 +88,7 @@ class ModelInfo(BaseModel):
     owned_by: str = "lazyrouter"
     capability: Optional[str] = None
     context_window: Optional[int] = None
+    metadata: Optional[dict] = None
 
 
 class ModelListResponse(BaseModel):

@@ -517,10 +517,7 @@ def create_app(
             with open("myfiles/models-anthropic.json") as f:
                 data = json.load(f)
                 for entry in data["data"]:
-                    provider_metadata[entry["id"]] = {
-                        "capability": entry.get("capabilities", {}).get("type"),
-                        "context_window": entry.get("capabilities", {}).get("max_thinking_budget")
-                    }
+                    provider_metadata[entry["id"]] = entry
         except Exception:
             pass
 
@@ -530,8 +527,9 @@ def create_app(
                 ModelInfo(
                     id=model_name,
                     owned_by="lazyrouter",
-                    capability=meta.get("capability"),
-                    context_window=meta.get("context_window")
+                    capability=meta.get("capabilities", {}).get("type"),
+                    context_window=meta.get("capabilities", {}).get("limits", {}).get("max_context_window_tokens"),
+                    metadata=meta if meta else None
                 )
             )
         return ModelListResponse(data=models)
