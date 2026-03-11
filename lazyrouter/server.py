@@ -511,10 +511,29 @@ def create_app(
     async def list_models():
         """List available models (OpenAI-compatible)"""
         models = [ModelInfo(id="auto", owned_by="lazyrouter")]
-        models += [
-            ModelInfo(id=model_name, owned_by="lazyrouter")
-            for model_name in config.llms.keys()
-        ]
+        # Load provider metadata from local JSON files (simulate provider API call)
+        provider_metadata = {}
+        try:
+            with open("myfiles/models-anthropic.json") as f:
+                data = json.load(f)
+                for entry in data["data"]:
+                    provider_metadata[entry["id"]] = {
+                        "capability": entry.get("capabilities", {}).get("type"),
+                        "context_window": entry.get("capabilities", {}).get("max_thinking_budget")
+                    }
+        except Exception:
+            pass
+
+        for model_name in config.llms.keys():
+            meta = provider_metadata.get(model_name, {})
+            models.append(
+                ModelInfo(
+                    id=model_name,
+                    owned_by="lazyrouter",
+                    capability=meta.get("capability"),
+                    context_window=meta.get("context_window")
+                )
+            )
         return ModelListResponse(data=models)
 
     def _build_health_status_response() -> HealthStatusResponse:

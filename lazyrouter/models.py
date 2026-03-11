@@ -86,6 +86,8 @@ class ModelInfo(BaseModel):
     object: str = "model"
     created: int = 0
     owned_by: str = "lazyrouter"
+    capability: Optional[str] = None
+    context_window: Optional[int] = None
 
 
 class ModelListResponse(BaseModel):
