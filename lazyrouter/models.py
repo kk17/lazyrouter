@@ -80,15 +80,14 @@ class ChatCompletionStreamResponse(BaseModel):
 
 
 class ModelInfo(BaseModel):
-    """Model information"""
+    """Model information - allows extra fields to carry provider metadata at top level"""
+
+    model_config = ConfigDict(extra="allow")
 
     id: str
     object: str = "model"
     created: int = 0
     owned_by: str = "lazyrouter"
-    capability: Optional[str] = None
-    context_window: Optional[int] = None
-    metadata: Optional[dict] = None
 
 
 class ModelListResponse(BaseModel):

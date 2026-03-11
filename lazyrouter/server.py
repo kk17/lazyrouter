@@ -1,11 +1,14 @@
 """FastAPI server with OpenAI-compatible endpoints"""
 
+import asyncio
 import json
 import secrets
 import logging
 import time
 import hashlib
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
+
+import httpx
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -436,6 +439,80 @@ def _assemble_non_streaming_response(
     return response
 
 
+async def _fetch_provider_models(
+    provider_name: str,
+    provider_cfg: Any,
+) -> Dict[str, Any]:
+    """Fetch model metadata from a provider's model list API.
+
+    Returns a dict mapping provider model ID -> metadata dict.
+    Silently returns {} on any error so the endpoint degrades gracefully.
+    """
+    api_style: str = getattr(provider_cfg, "api_style", "openai")
+    api_key: str = getattr(provider_cfg, "api_key", "") or ""
+    base_url: str = (getattr(provider_cfg, "base_url", None) or "").rstrip("/")
+
+    headers: Dict[str, str] = {}
+    url: str = ""
+
+    if api_style == "anthropic":
+        url = f"{base_url}/v1/models"
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        }
+    elif api_style == "github-copilot":
+        url = f"{base_url}/models"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Copilot-Integration-Id": "vscode-chat",
+            "Editor-Version": "vscode/1.99.0",
+        }
+    else:
+        # openai / openai-completions / gemini / etc.
+        url = f"{base_url}/v1/models"
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.warning(
+            "[models] failed to fetch models from provider %s (%s): %s",
+            provider_name,
+            url,
+            exc,
+        )
+        return {}
+
+    entries = data.get("data", [])
+    if not isinstance(entries, list):
+        return {}
+
+    return {entry["id"]: entry for entry in entries if isinstance(entry, dict) and "id" in entry}
+
+
+async def _build_provider_metadata(cfg: "Config") -> Dict[str, Dict[str, Any]]:
+    """Fetch model metadata from all configured providers in parallel.
+
+    Returns a two-level dict: {provider_name: {model_id: metadata}}.
+    """
+    tasks = {
+        name: asyncio.create_task(_fetch_provider_models(name, pcfg))
+        for name, pcfg in cfg.providers.items()
+    }
+    results: Dict[str, Dict[str, Any]] = {}
+    for name, task in tasks.items():
+        try:
+            results[name] = await task
+        except Exception as exc:
+            logger.warning("[models] provider %s metadata task failed: %s", name, exc)
+            results[name] = {}
+    return results
+
+
 def create_app(
     config_path: str = "config.yaml",
     env_file: str | None = None,
@@ -509,29 +586,32 @@ def create_app(
     @app.get("/v1/models", response_model=ModelListResponse)
     @app.get("/models", response_model=ModelListResponse)
     async def list_models():
-        """List available models (OpenAI-compatible)"""
-        models = [ModelInfo(id="auto", owned_by="lazyrouter")]
-        # Load provider metadata from local JSON files (simulate provider API call)
-        provider_metadata = {}
-        try:
-            with open("myfiles/models-anthropic.json") as f:
-                data = json.load(f)
-                for entry in data["data"]:
-                    provider_metadata[entry["id"]] = entry
-        except Exception:
-            pass
+        """List available models with live provider metadata merged at top level."""
+        # Fetch model metadata from all providers in parallel
+        provider_metadata = await _build_provider_metadata(config)
 
-        for model_name in config.llms.keys():
-            meta = provider_metadata.get(model_name, {})
-            models.append(
-                ModelInfo(
-                    id=model_name,
-                    owned_by="lazyrouter",
-                    capability=meta.get("capabilities", {}).get("type"),
-                    context_window=meta.get("capabilities", {}).get("limits", {}).get("max_context_window_tokens"),
-                    metadata=meta if meta else None
-                )
-            )
+        models: List[ModelInfo] = [ModelInfo(id="auto", owned_by="lazyrouter")]
+
+        for alias, llm_cfg in config.llms.items():
+            # Look up the actual model ID on the provider (may differ from alias)
+            provider_models = provider_metadata.get(llm_cfg.provider, {})
+            meta = provider_models.get(llm_cfg.model, {})
+
+            # Start with required LazyRouter fields
+            model_fields: Dict[str, Any] = {
+                "id": alias,
+                "object": "model",
+                "created": meta.get("created", 0),
+                "owned_by": "lazyrouter",
+            }
+
+            # Merge all provider metadata fields at top level (skip id/object/created)
+            for k, v in meta.items():
+                if k not in ("id", "object", "created", "owned_by"):
+                    model_fields[k] = v
+
+            models.append(ModelInfo(**model_fields))
+
         return ModelListResponse(data=models)
 
     def _build_health_status_response() -> HealthStatusResponse:
