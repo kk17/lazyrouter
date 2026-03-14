@@ -186,6 +186,9 @@ def select_fallback_models(
                 continue
             if name not in all_models:
                 continue
+            # Skip unhealthy models to avoid wasting time on known-failed providers
+            if healthy_models is not None and name not in healthy_models:
+                continue
             result.append(name)
             if len(result) >= MAX_FALLBACK_MODELS - 1:
                 break
