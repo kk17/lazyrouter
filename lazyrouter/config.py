@@ -5,7 +5,7 @@ import os
 import re
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import yaml
 from dotenv import dotenv_values, find_dotenv, load_dotenv
@@ -25,10 +25,9 @@ class ServeConfig(BaseModel):
 
     @field_validator("api_key")
     @classmethod
-    def api_key_must_not_be_empty(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v.strip() == "":
-            raise ValueError("serve.api_key must not be an empty string; use null/None to disable authentication")
-        return None if v is None else v.strip()
+    def api_key_must_not_be_empty(cls, value: Optional[str]) -> Optional[str]:
+        """Normalize surrounding whitespace while preserving fail-closed blanks."""
+        return None if value is None else value.strip()
 
 
 class ProviderConfig(BaseModel):
@@ -54,30 +53,15 @@ class RouterConfig(BaseModel):
     cache_buffer_seconds: int = Field(
         default=30, ge=0
     )  # Safety buffer before cache TTL expires (default 30s)
-
-    @model_validator(mode="before")
-    @classmethod
-    def reject_removed_cache_estimation_fields(cls, data: Any) -> Any:
-        """Reject removed cache-estimation router fields."""
-        if not isinstance(data, dict):
-            return data
-
-        removed_fields = [
-            field_name
-            for field_name in (
-                "cache_estimated_minutes_per_message",
-                "cache_create_input_multiplier",
-                "cache_hit_input_multiplier",
-            )
-            if field_name in data
-        ]
-        if removed_fields:
-            raise ValueError(
-                "Removed router config field(s): "
-                f"{', '.join(removed_fields)}. "
-                "Cache-cost estimation was removed; use cache_ttl on models as a qualitative routing signal instead."
-            )
-        return data
+    cache_estimated_minutes_per_message: float = Field(
+        default=2.0, gt=0
+    )  # Conservative cadence for cache cost estimation in routing metadata
+    cache_create_input_multiplier: float = Field(
+        default=1.25, gt=0
+    )  # Input cost multiplier on cache creation turn for estimation
+    cache_hit_input_multiplier: float = Field(
+        default=0.10, ge=0
+    )  # Input cost multiplier on cache-hit turns for estimation
 
     @model_validator(mode="after")
     def validate_router_config(self) -> "RouterConfig":
@@ -168,9 +152,6 @@ class HealthCheckConfig(BaseModel):
     idle_after_seconds: int = (
         300  # pause background checks after this many seconds without chat traffic
     )
-    stagger_seconds: float = (
-        0.5  # stagger model probes by this many seconds to avoid concurrent spikes
-    )
 
     @model_validator(mode="after")
     def validate_intervals(self) -> "HealthCheckConfig":
@@ -181,8 +162,6 @@ class HealthCheckConfig(BaseModel):
             raise ValueError("health_check.max_latency_ms must be > 0")
         if self.idle_after_seconds <= 0:
             raise ValueError("health_check.idle_after_seconds must be > 0")
-        if self.stagger_seconds < 0:
-            raise ValueError("health_check.stagger_seconds must be >= 0")
         return self
 
 
@@ -195,6 +174,31 @@ class Config(BaseModel):
     llms: Dict[str, ModelConfig]
     context_compression: ContextCompressionConfig = ContextCompressionConfig()
     health_check: HealthCheckConfig = HealthCheckConfig()
+    routes: Dict[str, List[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_routes(self) -> "Config":
+        """Validate that all models in routes exist in llms."""
+        reserved_route_names = {"auto"}
+        for route_name, models in self.routes.items():
+            if route_name in reserved_route_names:
+                raise ValueError(
+                    f"Route '{route_name}' is reserved and cannot be used"
+                )
+            if route_name in self.llms:
+                raise ValueError(
+                    f"Route '{route_name}' conflicts with an existing model id"
+                )
+            if not models:
+                raise ValueError(
+                    f"Route '{route_name}' must contain at least one model"
+                )
+            for model_name in models:
+                if model_name not in self.llms:
+                    raise ValueError(
+                        f"Route '{route_name}' references unknown model '{model_name}'"
+                    )
+        return self
 
     def get_api_key(self, provider: str) -> str:
         """Get API key for a provider."""
