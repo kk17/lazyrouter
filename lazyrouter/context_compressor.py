@@ -356,6 +356,22 @@ def compress_messages(
             break
 
     compressed_messages = [m for m in compressed if m is not None]
+
+    # Safety: always preserve at least the last non-system message so that
+    # providers always receive a valid conversational turn to respond to.
+    # Phase 2 dropping can inadvertently remove the active user turn when the
+    # system prompt alone exceeds max_history_tokens.
+    has_non_system = any(
+        m.get("role") not in INSTRUCTION_ROLES for m in compressed_messages
+    )
+    if not has_non_system:
+        # Find the last non-system message in the original list and restore it.
+        for original_msg in reversed(messages):
+            if original_msg.get("role") not in INSTRUCTION_ROLES:
+                compressed_messages.append(original_msg)
+                stats.messages_dropped = max(0, stats.messages_dropped - 1)
+                break
+
     stats.compressed_tokens = _estimate_messages_tokens(
         compressed_messages, model=model
     )
