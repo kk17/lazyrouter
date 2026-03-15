@@ -40,13 +40,26 @@ It also helps translate behavior across API styles (OpenAI, Gemini, and Anthropi
 ### Option 1: Run directly from GitHub (no clone needed)
 
 1. Install `uv`: <https://docs.astral.sh/uv/getting-started/installation/>
-2. Run:
+2. Start LazyRouter directly from GitHub:
 
 ```bash
 uvx --from git+https://github.com/mysteriousHerb/lazyrouter.git lazyrouter --config config.yaml
 ```
 
 If `config.yaml` does not exist yet, LazyRouter now starts a setup UI instead of failing. Open the printed `/admin/config` URL, paste/edit your `config.yaml` and `.env`, save, then use the restart button to apply the config.
+
+You do not need to manually prepare `config.yaml` or `.env` first anymore. The setup UI can create both files for you on first run.
+
+By default, `--config config.yaml` means:
+- `config.yaml` is saved in the directory where you ran `uvx`
+- `.env` is saved next to that config file
+- both files are normal on-disk files, so they persist across future `uvx` runs
+
+For example, if you launch from `/home/alice/projects/demo`, the setup UI will write:
+- `/home/alice/projects/demo/config.yaml`
+- `/home/alice/projects/demo/.env`
+
+If you launch from a different folder later, LazyRouter will look in that folder unless you pass an explicit `--config` path.
 
 If you want to use a specific env file path, add:
 
@@ -130,6 +143,7 @@ LazyRouter now exposes a browser-based config editor at `/admin/config`.
 - The UI supports raw `config.yaml` and `.env` editing for a low-friction V1 workflow.
 - Validation uses the same backend parser and Pydantic config models as normal startup.
 - Saved changes are written to disk atomically and require a restart before the running router picks them up.
+- Relative config paths are resolved from your current working directory, including when launched via `uvx`.
 
 ### Exchange Logging Controls
 
