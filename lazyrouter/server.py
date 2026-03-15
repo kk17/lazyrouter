@@ -7,12 +7,14 @@ import secrets
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+import yaml
 
 from .config import Config, load_config
 from .config_admin import (
@@ -153,6 +155,8 @@ def _restart_process(launch_settings: Dict[str, Any]) -> None:
         launch_settings["config_path"],
         launch_settings.get("env_file"),
     )
+    # Intentional in-place restart: argv comes from parsed CLI launch settings,
+    # and execv replaces this process instead of spawning a shell/child.
     os.execv(sys.executable, argv)
 
 
@@ -162,15 +166,21 @@ def _register_config_admin_routes(
     targets: ConfigTargets,
     bootstrap_mode: bool,
     launch_settings: Dict[str, Any] | None,
+    admin_dependencies: list[Any] | None = None,
 ) -> None:
     """Register browser-based config editing routes."""
 
+    admin_dependencies = admin_dependencies or []
     restart_supported = bool(launch_settings) and not bool(launch_settings.get("reload"))
     restart_hint = (
         "Saves do not hot-apply. Use restart after saving to reload the server with the updated files."
     )
 
-    @app.get("/admin/config", response_class=HTMLResponse)
+    @app.get(
+        "/admin/config",
+        response_class=HTMLResponse,
+        dependencies=admin_dependencies,
+    )
     async def admin_config_page():
         config_text, env_text = get_editor_texts(targets)
         return HTMLResponse(
@@ -184,7 +194,7 @@ def _register_config_admin_routes(
             )
         )
 
-    @app.post("/admin/config/api/validate")
+    @app.post("/admin/config/api/validate", dependencies=admin_dependencies)
     async def validate_admin_config(payload: ConfigEditorPayload):
         try:
             config = validate_editor_texts(targets, payload.config_text, payload.env_text)
@@ -196,7 +206,7 @@ def _register_config_admin_routes(
             "summary": summarize_config(config),
         }
 
-    @app.post("/admin/config/api/save")
+    @app.post("/admin/config/api/save", dependencies=admin_dependencies)
     async def save_admin_config(payload: ConfigEditorPayload):
         env_existed_before = targets.env_path.exists()
         try:
@@ -219,7 +229,7 @@ def _register_config_admin_routes(
             "env_updated": bool(payload.env_text.strip()) or not env_existed_before,
         }
 
-    @app.post("/admin/config/api/restart")
+    @app.post("/admin/config/api/restart", dependencies=admin_dependencies)
     async def restart_admin_config():
         if not restart_supported or launch_settings is None:
             raise HTTPException(
@@ -240,10 +250,31 @@ def _register_config_admin_routes(
         }
 
 
+def _bootstrap_api_key_from_raw_config(config_path: str) -> str | None:
+    """Best-effort extraction of serve.api_key for setup-mode auth."""
+    try:
+        with Path(config_path).expanduser().open("r", encoding="utf-8") as handle:
+            raw_config = yaml.safe_load(handle)
+    except Exception:
+        return None
+
+    if not isinstance(raw_config, dict):
+        return None
+    serve_config = raw_config.get("serve")
+    if not isinstance(serve_config, dict):
+        return None
+
+    api_key = serve_config.get("api_key")
+    if isinstance(api_key, str) and api_key.strip():
+        return api_key.strip()
+    return None
+
+
 def create_bootstrap_app(
     config_path: str = "config.yaml",
     env_file: str | None = None,
     launch_settings: Dict[str, Any] | None = None,
+    bootstrap_api_key: str | None = None,
 ) -> FastAPI:
     """Create setup-mode app when no config exists yet."""
 
@@ -253,11 +284,36 @@ def create_bootstrap_app(
         description="Bootstrap UI for creating LazyRouter config files",
         version="0.1.0",
     )
+
+    def verify_bootstrap_api_key(
+        auth: HTTPAuthorizationCredentials | None = Depends(security),  # noqa: B008
+    ) -> None:
+        """Protect setup-mode admin routes when a prior config declared an API key."""
+        if bootstrap_api_key is None:
+            return
+
+        if not auth:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing API Key",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        if not secrets.compare_digest(auth.credentials, bootstrap_api_key):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API Key",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
     _register_config_admin_routes(
         app,
         targets=targets,
         bootstrap_mode=True,
         launch_settings=launch_settings,
+        admin_dependencies=[Depends(verify_bootstrap_api_key)]
+        if bootstrap_api_key is not None
+        else [],
     )
 
     @app.get("/", include_in_schema=False)
@@ -296,15 +352,20 @@ def create_runtime_app(
 
     try:
         config = load_config(config_path, env_file=env_file)
-    except FileNotFoundError:
+    except (FileNotFoundError, ValueError) as exc:
+        bootstrap_api_key = None
+        if isinstance(exc, ValueError):
+            bootstrap_api_key = _bootstrap_api_key_from_raw_config(config_path)
         logger.warning(
-            "Configuration file not found at %s; starting LazyRouter in setup mode",
+            "Configuration at %s could not be loaded (%s); starting LazyRouter in setup mode",
             config_path,
+            exc,
         )
         return create_bootstrap_app(
             config_path=config_path,
             env_file=env_file,
             launch_settings=launch_settings,
+            bootstrap_api_key=bootstrap_api_key,
         )
 
     return create_app(
@@ -637,6 +698,7 @@ def create_app(
         targets=resolve_config_targets(config_path, env_file),
         bootstrap_mode=False,
         launch_settings=launch_settings,
+        admin_dependencies=[Depends(verify_api_key)] if config.serve.api_key is not None else [],
     )
 
     @app.on_event("startup")

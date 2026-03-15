@@ -76,9 +76,15 @@ def main():
     try:
         config = load_config(args.config, env_file=args.env_file)
         bootstrap_mode = False
+        bootstrap_reason = ""
     except FileNotFoundError:
         config = None
         bootstrap_mode = True
+        bootstrap_reason = f"Config file not found: {args.config}"
+    except ValueError as exc:
+        config = None
+        bootstrap_mode = True
+        bootstrap_reason = f"Config is invalid and needs repair: {exc}"
 
     # Determine host and port
     defaults = ServeConfig()
@@ -88,7 +94,7 @@ def main():
 
     if bootstrap_mode:
         print(f"Starting LazyRouter setup server on {host}:{port}")
-        print(f"Config file not found: {args.config}")
+        print(bootstrap_reason)
         if args.env_file:
             print(f"Environment file target: {args.env_file}")
         print("\nSetup UI:")

@@ -244,7 +244,14 @@ def substitute_env_vars(
         matches = re.findall(pattern, value)
 
         for var_name in matches:
-            env_value = lookup.get(var_name, "")
+            env_value = lookup.get(var_name)
+            if env_value is None:
+                logger.warning(
+                    "Environment variable '%s' is not defined; substituting empty string in config value %r",
+                    var_name,
+                    value,
+                )
+                env_value = ""
             value = value.replace(f"${{{var_name}}}", env_value)
 
         return value
@@ -324,6 +331,10 @@ def load_config(
         FileNotFoundError: If config file doesn't exist
         ValueError: If configuration is invalid
     """
+    expanded_config_path = Path(config_path).expanduser()
+    if not expanded_config_path.is_absolute():
+        expanded_config_path = Path.cwd() / expanded_config_path
+
     # Load environment variables from env file (or default .env if present)
     if env_file:
         expanded_env_file = Path(env_file).expanduser()
@@ -332,9 +343,6 @@ def load_config(
         load_dotenv(dotenv_path=str(expanded_env_file))
         env_values = dotenv_values(dotenv_path=str(expanded_env_file))
     else:
-        expanded_config_path = Path(config_path).expanduser()
-        if not expanded_config_path.is_absolute():
-            expanded_config_path = Path.cwd() / expanded_config_path
         sibling_dotenv = expanded_config_path.parent / ".env"
         # Prefer config-adjacent .env for uvx/editor flows, then fall back to cwd search.
         dotenv_path = str(sibling_dotenv) if sibling_dotenv.exists() else find_dotenv(usecwd=True)
@@ -342,10 +350,10 @@ def load_config(
         env_values = dotenv_values(dotenv_path=dotenv_path) if dotenv_path else {}
 
     # Load YAML file
-    if not os.path.exists(config_path):
+    if not expanded_config_path.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-    with open(config_path, "r", encoding="utf-8") as f:
+    with expanded_config_path.open("r", encoding="utf-8") as f:
         try:
             raw_config = yaml.safe_load(f)
         except yaml.YAMLError as e:

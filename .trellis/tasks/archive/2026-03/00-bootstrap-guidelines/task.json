@@ -13,15 +13,15 @@
   "subtasks": [
     {
       "name": "Fill backend guidelines",
-      "status": "pending"
+      "status": "completed"
     },
     {
       "name": "Add code examples",
-      "status": "pending"
+      "status": "completed"
     }
   ],
   "relatedFiles": [
     ".trellis/spec/backend/"
   ],
-  "notes": "First-time setup task created by trellis init (backend project)"
+  "notes": "First-time setup task created by trellis init (backend project). Archived as completed when the bootstrap guideline work moved into the newer Trellis/spec workflow."
 }

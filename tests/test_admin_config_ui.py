@@ -64,6 +64,61 @@ def test_create_runtime_app_without_config_starts_setup_mode(tmp_path):
     assert str(tmp_path / "config.yaml") in page.text
 
 
+def test_create_runtime_app_with_invalid_config_starts_setup_mode(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("serve: [not valid for this schema]\n", encoding="utf-8")
+
+    app = server_mod.create_runtime_app(config_path=str(config_path))
+
+    with TestClient(app) as client:
+        health = client.get("/health")
+        page = client.get("/admin/config")
+
+    assert health.status_code == 200
+    assert health.json()["status"] == "setup-required"
+    assert page.status_code == 200
+    assert "LazyRouter Setup" in page.text
+
+
+def test_invalid_config_setup_mode_uses_existing_api_key_for_admin_auth(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            """
+            serve:
+              host: "0.0.0.0"
+              port: 1234
+              api_key: "secret-key"
+            router:
+              provider: "missing"
+              model: "fast"
+            providers:
+              openai:
+                api_key: "abc123"
+            llms:
+              fast:
+                provider: "openai"
+                model: "gpt-4o-mini"
+                description: "Fast model"
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    app = server_mod.create_runtime_app(config_path=str(config_path))
+
+    with TestClient(app) as client:
+        page = client.get("/admin/config")
+        authed_page = client.get(
+            "/admin/config",
+            headers={"Authorization": "Bearer secret-key"},
+        )
+
+    assert page.status_code == 401
+    assert authed_page.status_code == 200
+
+
 def test_admin_validate_endpoint_accepts_raw_config_and_env_text(tmp_path):
     app = server_mod.create_bootstrap_app(config_path=str(tmp_path / "config.yaml"))
 
@@ -167,6 +222,39 @@ def test_admin_restart_endpoint_requires_launch_settings_when_unavailable(monkey
 
     assert response.status_code == 409
     assert "restart is unavailable" in response.json()["detail"].lower()
+
+
+def test_admin_endpoints_require_auth_when_api_key_is_configured(monkeypatch):
+    monkeypatch.setattr(server_mod.HealthChecker, "start", lambda _: None)
+    monkeypatch.setattr(server_mod.HealthChecker, "stop", lambda _: None)
+
+    app = server_mod.create_app(
+        preloaded_config=_configured_app_config().model_copy(
+            update={"serve": ServeConfig(api_key="secret-key")}
+        )
+    )
+
+    with TestClient(app) as client:
+        page = client.get("/admin/config")
+        validate = client.post(
+            "/admin/config/api/validate",
+            json={"config_text": _valid_config_text(), "env_text": "TEST_API_KEY=abc\n"},
+        )
+        save = client.post(
+            "/admin/config/api/save",
+            json={"config_text": _valid_config_text(), "env_text": "TEST_API_KEY=abc\n"},
+        )
+        restart = client.post("/admin/config/api/restart")
+        authed_page = client.get(
+            "/admin/config",
+            headers={"Authorization": "Bearer secret-key"},
+        )
+
+    assert page.status_code == 401
+    assert validate.status_code == 401
+    assert save.status_code == 401
+    assert restart.status_code == 401
+    assert authed_page.status_code == 200
 
 
 def test_admin_restart_endpoint_returns_command_when_supported(tmp_path, monkeypatch):
