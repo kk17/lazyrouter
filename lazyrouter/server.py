@@ -1,16 +1,36 @@
 """FastAPI server with OpenAI-compatible endpoints"""
 
 import json
-import secrets
 import logging
+import os
+import secrets
+import sys
+import threading
 import time
+from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.responses import StreamingResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBasic,
+    HTTPBasicCredentials,
+    HTTPBearer,
+)
+from pydantic import BaseModel
+import yaml
 
 from .config import Config, load_config
+from .config_admin import (
+    ConfigTargets,
+    get_editor_texts,
+    render_admin_page,
+    resolve_config_targets,
+    save_editor_texts,
+    summarize_config,
+    validate_editor_texts,
+)
 from .exchange_logger import log_exchange
 from .gemini_retries import apply_gemini_stream_retries
 from .health_checker import HealthChecker
@@ -48,8 +68,15 @@ router: LLMRouter = None
 health_checker: HealthChecker = None
 
 
+class ConfigEditorPayload(BaseModel):
+    """Payload for browser-based config editing."""
+
+    config_text: str
+    env_text: str = ""
+
 
 security = HTTPBearer(auto_error=False)
+admin_security = HTTPBasic(auto_error=False)
 
 
 def verify_api_key(
@@ -127,6 +154,279 @@ def _get_first_response_message(response: Dict[str, Any]) -> Dict[str, Any] | No
     if not isinstance(message, dict):
         return None
     return message
+
+
+def _build_restart_argv(launch_settings: Dict[str, Any]) -> list[str]:
+    """Build argv for in-place process restart."""
+    argv = [
+        sys.executable,
+        "-m",
+        "lazyrouter",
+        "--config",
+        str(launch_settings["config_path"]),
+    ]
+    env_file = launch_settings.get("env_file")
+    if env_file:
+        argv.extend(["--env-file", str(env_file)])
+    if launch_settings.get("host_override") is not None:
+        argv.extend(["--host", str(launch_settings["host_override"])])
+    if launch_settings.get("port_override") is not None:
+        argv.extend(["--port", str(launch_settings["port_override"])])
+    if launch_settings.get("reload"):
+        argv.append("--reload")
+    return argv
+
+
+def _restart_process(launch_settings: Dict[str, Any]) -> None:
+    """Replace the current process with a fresh LazyRouter launch."""
+    argv = _build_restart_argv(launch_settings)
+    logger.info(
+        "[admin-config] restarting process with config=%s env=%s",
+        launch_settings["config_path"],
+        launch_settings.get("env_file"),
+    )
+    # Intentional in-place restart: argv comes from parsed CLI launch settings,
+    # and execv replaces this process instead of spawning a shell/child.
+    os.execv(sys.executable, argv)
+
+
+def _verify_admin_restart_request(request: Request) -> None:
+    """Require a same-origin JS-only header for restart requests."""
+    if request.headers.get("x-lazyrouter-admin-action") != "restart":
+        raise HTTPException(
+            status_code=403,
+            detail="Restart requests must come from the admin UI.",
+        )
+
+
+def _register_config_admin_routes(
+    app: FastAPI,
+    *,
+    targets: ConfigTargets,
+    bootstrap_mode: bool,
+    launch_settings: Dict[str, Any] | None,
+    admin_dependencies: list[Any] | None = None,
+) -> None:
+    """Register browser-based config editing routes."""
+
+    admin_dependencies = admin_dependencies or []
+    restart_supported = bool(launch_settings) and not bool(launch_settings.get("reload"))
+    restart_hint = (
+        "Saves do not hot-apply. Use restart after saving to reload the server with the updated files."
+    )
+
+    @app.get(
+        "/admin/config",
+        response_class=HTMLResponse,
+        dependencies=admin_dependencies,
+    )
+    async def admin_config_page():
+        config_text, env_text = get_editor_texts(targets)
+        return HTMLResponse(
+            render_admin_page(
+                targets=targets,
+                config_text=config_text,
+                env_text=env_text,
+                bootstrap_mode=bootstrap_mode,
+                restart_supported=restart_supported,
+                restart_hint=restart_hint,
+            )
+        )
+
+    @app.post("/admin/config/api/validate", dependencies=admin_dependencies)
+    async def validate_admin_config(payload: ConfigEditorPayload):
+        try:
+            config = validate_editor_texts(targets, payload.config_text, payload.env_text)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        return {
+            "detail": "Validation passed.",
+            "summary": summarize_config(config),
+        }
+
+    @app.post("/admin/config/api/save", dependencies=admin_dependencies)
+    async def save_admin_config(payload: ConfigEditorPayload):
+        env_existed_before = targets.env_path.exists()
+        try:
+            config = save_editor_texts(targets, payload.config_text, payload.env_text)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        logger.info(
+            "[admin-config] saved config files to %s and %s",
+            targets.config_path,
+            targets.env_path,
+        )
+        return {
+            "detail": (
+                "Config saved. Blank .env input preserves the existing env file. Restart LazyRouter to apply the updated settings."
+            ),
+            "summary": summarize_config(config),
+            "config_path": str(targets.config_path),
+            "env_path": str(targets.env_path),
+            "env_updated": bool(payload.env_text.strip()) or not env_existed_before,
+        }
+
+    @app.post("/admin/config/api/restart", dependencies=admin_dependencies)
+    async def restart_admin_config(request: Request):
+        if not restart_supported or launch_settings is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Runtime restart is unavailable in this mode. Save changes, then restart the launch command manually."
+                ),
+            )
+
+        _verify_admin_restart_request(request)
+        thread = threading.Timer(0.2, _restart_process, args=(launch_settings,))
+        thread.daemon = True
+        thread.start()
+        return {
+            "detail": (
+                "Restarting LazyRouter now. This page will disconnect while the process is replaced."
+            ),
+            "command": _build_restart_argv(launch_settings)[1:],
+        }
+
+
+def _verify_admin_password(
+    credentials: HTTPBasicCredentials | None,
+    expected_api_key: str | None,
+) -> None:
+    """Verify browser-facing admin credentials using Basic auth."""
+    if expected_api_key is None:
+        return
+
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing admin password",
+            headers={"WWW-Authenticate": 'Basic realm="LazyRouter Admin"'},
+        )
+
+    # Browsers always send username + password for Basic auth; we only care
+    # about the password so the popup works like a simple shared-secret prompt.
+    if not secrets.compare_digest(credentials.password, expected_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin password",
+            headers={"WWW-Authenticate": 'Basic realm="LazyRouter Admin"'},
+        )
+
+
+def _bootstrap_api_key_from_raw_config(config_path: str) -> str | None:
+    """Best-effort extraction of serve.api_key for setup-mode auth."""
+    try:
+        with Path(config_path).expanduser().open("r", encoding="utf-8") as handle:
+            raw_config = yaml.safe_load(handle)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+
+    if not isinstance(raw_config, dict):
+        return None
+    serve_config = raw_config.get("serve")
+    if not isinstance(serve_config, dict):
+        return None
+
+    api_key = serve_config.get("api_key")
+    if isinstance(api_key, str) and api_key.strip():
+        resolved_api_key = os.path.expandvars(api_key.strip())
+        if resolved_api_key and resolved_api_key != api_key.strip():
+            return resolved_api_key
+        return api_key.strip()
+    return None
+
+
+def create_bootstrap_app(
+    config_path: str = "config.yaml",
+    env_file: str | None = None,
+    launch_settings: Dict[str, Any] | None = None,
+    bootstrap_api_key: str | None = None,
+) -> FastAPI:
+    """Create setup-mode app when no config exists yet."""
+
+    targets = resolve_config_targets(config_path, env_file)
+    app = FastAPI(
+        title="LazyRouter Setup",
+        description="Bootstrap UI for creating LazyRouter config files",
+        version="0.1.0",
+    )
+
+    def verify_bootstrap_api_key(
+        auth: HTTPBasicCredentials | None = Depends(admin_security),  # noqa: B008
+    ) -> None:
+        """Protect setup-mode admin routes when a prior config declared an API key."""
+        _verify_admin_password(auth, bootstrap_api_key)
+
+    _register_config_admin_routes(
+        app,
+        targets=targets,
+        bootstrap_mode=True,
+        launch_settings=launch_settings,
+        admin_dependencies=[Depends(verify_bootstrap_api_key)]
+        if bootstrap_api_key is not None
+        else [],
+    )
+
+    @app.get("/", include_in_schema=False)
+    async def root():
+        return RedirectResponse(url="/admin/config")
+
+    @app.get("/health")
+    async def health_check():
+        return {
+            "status": "setup-required",
+            "detail": "Create and save config via /admin/config, then restart LazyRouter.",
+            "available_models": [],
+        }
+
+    @app.get("/v1/models")
+    @app.get("/models")
+    async def list_models():
+        return {"object": "list", "data": []}
+
+    @app.post("/v1/chat/completions")
+    async def chat_completions_unavailable():
+        raise HTTPException(
+            status_code=503,
+            detail="LazyRouter is in setup mode. Save config at /admin/config and restart the process.",
+        )
+
+    return app
+
+
+def create_runtime_app(
+    config_path: str = "config.yaml",
+    env_file: str | None = None,
+    launch_settings: Dict[str, Any] | None = None,
+) -> FastAPI:
+    """Create normal app or setup app depending on config availability."""
+
+    try:
+        config = load_config(config_path, env_file=env_file)
+    except (FileNotFoundError, ValueError) as exc:
+        bootstrap_api_key = None
+        if isinstance(exc, ValueError):
+            bootstrap_api_key = _bootstrap_api_key_from_raw_config(config_path)
+        logger.warning(
+            "Configuration at %s could not be loaded (%s); starting LazyRouter in setup mode",
+            config_path,
+            exc,
+        )
+        return create_bootstrap_app(
+            config_path=config_path,
+            env_file=env_file,
+            launch_settings=launch_settings,
+            bootstrap_api_key=bootstrap_api_key,
+        )
+
+    return create_app(
+        config_path=config_path,
+        env_file=env_file,
+        preloaded_config=config,
+        launch_settings=launch_settings,
+    )
 
 
 def _build_effective_request_for_log(ctx: "RequestContext") -> Dict[str, Any]:
@@ -380,6 +680,7 @@ def create_app(
     config_path: str = "config.yaml",
     env_file: str | None = None,
     preloaded_config: Config | None = None,
+    launch_settings: Dict[str, Any] | None = None,
 ) -> FastAPI:
     """Create and configure FastAPI application
 
@@ -387,6 +688,7 @@ def create_app(
         config_path: Path to configuration file
         env_file: Optional path to dotenv file
         preloaded_config: Preloaded config object to avoid re-parsing config
+        launch_settings: CLI/runtime launch info for admin restart handling
 
     Returns:
         Configured FastAPI app
@@ -409,6 +711,11 @@ def create_app(
             logger.exception(f"Failed to load configuration: {e}")
             raise
 
+    def verify_admin_api_key(
+        auth: HTTPBasicCredentials | None = Depends(admin_security),  # noqa: B008
+    ) -> None:
+        """Verify browser-facing admin credentials from Basic auth."""
+        _verify_admin_password(auth, config.serve.api_key)
     # Initialize router
     try:
         router = LLMRouter(config)
@@ -425,6 +732,15 @@ def create_app(
         title="LazyRouter",
         description="Simplified LLM Router with OpenAI-compatible API",
         version="0.1.0",
+    )
+    _register_config_admin_routes(
+        app,
+        targets=resolve_config_targets(config_path, env_file),
+        bootstrap_mode=False,
+        launch_settings=launch_settings,
+        admin_dependencies=[Depends(verify_admin_api_key)]
+        if config.serve.api_key is not None
+        else [],
     )
 
     @app.on_event("startup")
@@ -483,7 +799,11 @@ def create_app(
             results=results,
         )
 
-    @app.get("/v1/health-status", response_model=HealthStatusResponse)
+    @app.get(
+        "/v1/health-status",
+        response_model=HealthStatusResponse,
+        dependencies=[Depends(verify_api_key)],
+    )
     async def health_status():
         """Return current health-check state and latest per-model benchmark results."""
         return _build_health_status_response()
@@ -567,7 +887,11 @@ def create_app(
             logger.error(f"Error processing request: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.get("/v1/health-check", response_model=HealthStatusResponse)
+    @app.get(
+        "/v1/health-check",
+        response_model=HealthStatusResponse,
+        dependencies=[Depends(verify_api_key)],
+    )
     async def health_check_now():
         """Run a fresh health check, then return the same payload as /v1/health-status."""
         await health_checker.run_check()

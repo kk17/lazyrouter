@@ -63,6 +63,20 @@ def test_load_config_with_tilde_env_file_path(tmp_path, monkeypatch):
     assert config.providers["openai"].api_key == "tilde123"
 
 
+def test_load_config_with_tilde_config_path(tmp_path, monkeypatch):
+    """Tilde-style config file paths should be expanded correctly."""
+    monkeypatch.delenv("TEST_API_KEY", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    config_file = tmp_path / "config.yaml"
+    _write_minimal_config(config_file)
+    (tmp_path / ".env").write_text("TEST_API_KEY=tilde-config\n", encoding="utf-8")
+
+    config = load_config("~/config.yaml")
+    assert config.providers["openai"].api_key == "tilde-config"
+
+
 def test_load_config_with_missing_env_file_raises(tmp_path):
     """Missing explicit env file should raise a clear error."""
     config_file = tmp_path / "config.yaml"
