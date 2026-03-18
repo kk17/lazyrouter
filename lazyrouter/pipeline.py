@@ -158,8 +158,45 @@ def _prepare_for_model(
                     if stabilised != content:
                         msg = dict(msg)
                         msg["content"] = stabilised
+            # Anthropic rejects tool messages with empty content.
+            elif msg.get("role") == "tool" and msg.get("content") == "":
+                msg = dict(msg)
+                msg["content"] = "(no output)"
             new_messages.append(msg)
         prep_messages = new_messages
+
+        # Anthropic requires strict user/assistant alternation; consecutive assistant
+        # messages cause a 400.  Merge them by combining content and tool_calls.
+        merged: list = []
+        for msg in prep_messages:
+            if merged and msg.get("role") == "assistant" and merged[-1].get("role") == "assistant":
+                prev = merged[-1]
+                # Collect text from both messages
+                def _extract_text(m: dict) -> str:
+                    c = m.get("content")
+                    if isinstance(c, str):
+                        return c
+                    if isinstance(c, list):
+                        parts = [b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"]
+                        return "\n".join(p for p in parts if p)
+                    return ""
+                text_parts = [t for t in (_extract_text(prev), _extract_text(msg)) if t]
+                merged_text = "\n".join(text_parts) if text_parts else None
+                # Combine tool_calls lists
+                prev_tc = prev.get("tool_calls") or []
+                curr_tc = msg.get("tool_calls") or []
+                merged_tc = prev_tc + curr_tc
+                new_msg: dict = {"role": "assistant"}
+                if merged_text:
+                    new_msg["content"] = merged_text
+                if merged_tc:
+                    new_msg["tool_calls"] = merged_tc
+                if not merged_text and not merged_tc:
+                    new_msg["content"] = ""
+                merged[-1] = new_msg
+            else:
+                merged.append(dict(msg))
+        prep_messages = merged
 
         has_non_system = any(
             str(msg.get("role", "")).strip().lower() != "system"
