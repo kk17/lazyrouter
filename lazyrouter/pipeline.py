@@ -39,6 +39,7 @@ from .retry_handler import (
     select_fallback_models,
 )
 from .sanitizers import (
+    normalize_tools_for_openai,
     sanitize_messages_for_gemini,
     sanitize_tool_schema_for_anthropic,
     sanitize_tool_schema_for_gemini,
@@ -144,7 +145,7 @@ def _prepare_for_model(
                 tools, output_format="openai"
             )
         else:
-            prep_extra["tools"] = tools
+            prep_extra["tools"] = normalize_tools_for_openai(tools)
 
     # For Anthropic: stabilise message_id in system prompt so it doesn't bust the cache,
     # then ensure at least one non-system message for LiteLLM/Anthropic compatibility.
@@ -818,6 +819,16 @@ async def call_with_fallback(
                     )
                 logger.warning(
                     "[fallback] model %s failed with retryable error: %s",
+                    try_model,
+                    str(e)[:200],
+                )
+                continue
+            elif getattr(e, "status_code", None) == 400:
+                # 400 errors may be model-specific (access restrictions, unsupported
+                # features for this tier/token). Continue to fallback models rather
+                # than raising immediately.
+                logger.warning(
+                    "[fallback] model %s rejected request with 400, trying next model: %s",
                     try_model,
                     str(e)[:200],
                 )

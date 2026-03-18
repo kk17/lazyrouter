@@ -301,6 +301,59 @@ def sanitize_tool_schema_for_anthropic(
     return anthropic_tools
 
 
+def normalize_tools_for_openai(
+    tools: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Normalize tool definitions to OpenAI format.
+
+    Handles tools that may arrive in Anthropic format (name/description/input_schema)
+    or already in OpenAI format (type/function). Ensures the output is always
+    OpenAI-compatible: {"type": "function", "function": {"name": ..., "description": ..., "parameters": {...}}}
+
+    Args:
+        tools: List of tool definitions in any supported format
+
+    Returns:
+        List of tool definitions in OpenAI format
+    """
+    if not tools:
+        return tools
+
+    openai_tools = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        # Already in OpenAI format
+        if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+            openai_tools.append(tool)
+            continue
+        # Anthropic format: has name + input_schema (no type/function wrapper)
+        if "input_schema" in tool:
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool.get("name", ""),
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("input_schema", {"type": "object"}),
+                },
+            })
+            continue
+        # Bare function style (name/description/parameters)
+        if "name" in tool and "function" not in tool:
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool.get("name", ""),
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("parameters", {"type": "object"}),
+                },
+            })
+            continue
+        # Unknown format: pass through as-is
+        openai_tools.append(tool)
+    return openai_tools
+
+
 def _sanitize_schema(schema: Dict[str, Any], require_type: bool = False) -> Dict[str, Any]:
     """Recursively sanitize a JSON schema to be Anthropic-compatible.
 
