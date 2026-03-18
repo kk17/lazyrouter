@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import secrets
 import logging
 import time
@@ -452,11 +453,14 @@ async def _fetch_provider_models(
     api_key: str = getattr(provider_cfg, "api_key", "") or ""
     base_url: str = (getattr(provider_cfg, "base_url", None) or "").rstrip("/")
 
+    # If base_url already ends with a version segment (e.g. /v1, /v4), don't prepend another /v1
+    _versioned = bool(re.search(r"/v\d+$", base_url))
+
     headers: Dict[str, str] = {}
     url: str = ""
 
     if api_style == "anthropic":
-        url = f"{base_url}/v1/models"
+        url = f"{base_url}/models" if _versioned else f"{base_url}/v1/models"
         headers = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
@@ -470,7 +474,7 @@ async def _fetch_provider_models(
         }
     else:
         # openai / openai-completions / gemini / etc.
-        url = f"{base_url}/v1/models"
+        url = f"{base_url}/models" if _versioned else f"{base_url}/v1/models"
         headers = {"Authorization": f"Bearer {api_key}"}
 
     try:
