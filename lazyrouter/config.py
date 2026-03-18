@@ -104,6 +104,7 @@ class ModelConfig(BaseModel):
         default=None, gt=0
     )  # Cache TTL in minutes (e.g., 5 for Claude prompt caching)
     fallback_models: Optional[List[str]] = None  # Explicit fallback order (overrides ELO-similarity)
+    alias: Optional[List[str]] = None  # Alternative model IDs that route to this model
 
 
 class ContextCompressionConfig(BaseModel):

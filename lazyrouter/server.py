@@ -592,25 +592,32 @@ def create_app(
 
         models: List[ModelInfo] = [ModelInfo(id="auto", owned_by="lazyrouter")]
 
-        for alias, llm_cfg in config.llms.items():
+        for canonical_id, llm_cfg in config.llms.items():
             # Look up the actual model ID on the provider (may differ from alias)
             provider_models = provider_metadata.get(llm_cfg.provider, {})
             meta = provider_models.get(llm_cfg.model, {})
 
-            # Start with required LazyRouter fields
-            model_fields: Dict[str, Any] = {
-                "id": alias,
-                "object": "model",
-                "created": meta.get("created", 0),
-                "owned_by": "lazyrouter",
-            }
+            # Base provider metadata fields (skip id/object/created)
+            extra_meta = {k: v for k, v in meta.items() if k not in ("id", "object", "created", "owned_by")}
 
-            # Merge all provider metadata fields at top level (skip id/object/created)
-            for k, v in meta.items():
-                if k not in ("id", "object", "created", "owned_by"):
-                    model_fields[k] = v
+            # Emit the canonical model entry
+            models.append(ModelInfo(
+                id=canonical_id,
+                object="model",
+                created=meta.get("created", 0),
+                owned_by="lazyrouter",
+                **extra_meta,
+            ))
 
-            models.append(ModelInfo(**model_fields))
+            # Emit one entry per configured alias
+            for alias_id in (llm_cfg.alias or []):
+                models.append(ModelInfo(
+                    id=alias_id,
+                    object="model",
+                    created=meta.get("created", 0),
+                    owned_by="lazyrouter",
+                    **extra_meta,
+                ))
 
         return ModelListResponse(data=models)
 

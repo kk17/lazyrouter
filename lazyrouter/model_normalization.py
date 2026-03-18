@@ -40,6 +40,11 @@ def normalize_requested_model(
         alias_lower = alias_str.lower()
         cfg_model_lower = cfg_model.lower()
 
+        # Check configured aliases (exact match)
+        cfg_aliases = getattr(cfg, "alias", None) or []
+        if normalized in cfg_aliases or normalized_lower in [a.lower() for a in cfg_aliases]:
+            return alias_str
+
         # Match exact alias, exact provider model, or unique prefix of provider model
         if (
             normalized == alias_str
