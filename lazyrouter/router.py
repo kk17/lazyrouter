@@ -538,13 +538,10 @@ class LLMRouter:
 
         # Build LiteLLM params
         params = self._get_litellm_params(provider_name, model_config.model)
-        params.update(
-            {
-                "messages": messages,
-                "stream": stream,
-                "temperature": temperature,
-            }
-        )
+        params["messages"] = messages
+        params["stream"] = stream
+        if temperature is not None:
+            params["temperature"] = temperature
 
         if max_tokens:
             params["max_tokens"] = max_tokens
