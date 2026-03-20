@@ -1,8 +1,12 @@
 """CLI entry point for LazyRouter server."""
 
 import argparse
+import json
 import os
+import re
+from typing import Any, Dict
 
+import httpx
 import uvicorn
 
 from .config import load_config
@@ -10,6 +14,96 @@ from .server import create_app
 
 _CONFIG_ENV_VAR = "LAZYROUTER_CONFIG_PATH"
 _ENV_FILE_ENV_VAR = "LAZYROUTER_ENV_FILE"
+
+
+def _fetch_provider_models(provider_name: str, provider_cfg: Any) -> Dict[str, Any]:
+    """Fetch model metadata from a provider's model list API.
+
+    Returns a dict mapping provider model ID -> metadata dict.
+    Silently returns {} on any error.
+    """
+    api_style: str = getattr(provider_cfg, "api_style", "openai")
+    api_key: str = getattr(provider_cfg, "api_key", "") or ""
+    base_url: str = (getattr(provider_cfg, "base_url", None) or "").rstrip("/")
+
+    _versioned = bool(re.search(r"/v\d+$", base_url))
+
+    headers: Dict[str, str] = {}
+    url: str = ""
+
+    if api_style == "anthropic":
+        url = f"{base_url}/models" if _versioned else f"{base_url}/v1/models"
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        }
+    elif api_style == "github-copilot":
+        url = f"{base_url}/models"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Copilot-Integration-Id": "vscode-chat",
+            "Editor-Version": "vscode/1.99.0",
+        }
+    else:
+        # openai / openai-completions / gemini / etc.
+        url = f"{base_url}/models" if _versioned else f"{base_url}/v1/models"
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(url, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:
+        print(f"  Warning: failed to fetch models from {provider_name} ({url}): {exc}")
+        return {}
+
+
+def _list_models(config: Any, provider_name: str, output_format: str) -> None:
+    """List models from specified provider(s)."""
+    if provider_name == "all":
+        providers_to_fetch = list(config.providers.keys())
+    elif provider_name not in config.providers:
+        available = list(config.providers.keys())
+        print(f"Error: Provider '{provider_name}' not found.")
+        print(f"Available providers: {', '.join(available) if available else '(none)'}")
+        raise SystemExit(1)
+    else:
+        providers_to_fetch = [provider_name]
+
+    all_results: Dict[str, Any] = {}
+
+    for pname in providers_to_fetch:
+        pcfg = config.providers[pname]
+        result = _fetch_provider_models(pname, pcfg)
+        all_results[pname] = result
+
+    if output_format == "json":
+        print(json.dumps(all_results, indent=2))
+    else:
+        for pname, result in all_results.items():
+            print(f"{pname}:")
+            entries = result.get("data", [])
+            if not isinstance(entries, list):
+                print(f"  (no models found or invalid response)")
+            elif len(entries) == 0:
+                print(f"  (no models)")
+            else:
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        model_id = entry.get("id", "?")
+                        # Show additional fields if present
+                        extra = {
+                            k: v
+                            for k, v in entry.items()
+                            if k not in ("id", "object", "created", "owned_by")
+                        }
+                        if extra:
+                            extra_str = ", ".join(f"{k}={v}" for k, v in extra.items())
+                            print(f"  - {model_id} ({extra_str})")
+                        else:
+                            print(f"  - {model_id}")
+            print()
 
 
 def _app_factory():
@@ -52,11 +146,32 @@ def main():
         default=None,
         help="Path to environment file (default: auto-load .env if available)",
     )
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="List available models from provider(s) and exit (does not start server)",
+    )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default="all",
+        help="Provider to list models from (default: all providers in config)",
+    )
+    parser.add_argument(
+        "--format",
+        type=str,
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text)",
+    )
 
     args = parser.parse_args()
 
-    # Load config to get server settings
     config = load_config(args.config, env_file=args.env_file)
+
+    if args.list_models:
+        _list_models(config, args.provider, args.format)
+        return
 
     # Determine host and port
     host = args.host or config.serve.host
@@ -98,3 +213,7 @@ def main():
         # env_file still matters because it was applied in load_config above.
         app = create_app(args.config, env_file=args.env_file, preloaded_config=config)
         uvicorn.run(app, host=host, port=port, log_level=log_level)
+
+
+if __name__ == "__main__":
+    main()
