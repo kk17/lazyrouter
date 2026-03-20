@@ -72,7 +72,7 @@ cp config.example.yaml config.yaml
 4. Start the server:
 
 ```bash
-uv run python main.py --config config.yaml
+uv run lazyrouter --config config.yaml
 ```
 
 5. Send requests to `http://localhost:1234/v1/chat/completions`.
@@ -235,6 +235,26 @@ curl -X POST http://localhost:1234/v1/chat/completions \
 - `GET /v1/health-check` - Run health check now and return results
 - `POST /v1/chat/completions` - OpenAI-compatible chat endpoint
 - `POST /v1/messages` - Anthropic-compatible messages endpoint
+
+## CLI Commands
+
+The `lazyrouter` CLI (installed via `uv run lazyrouter`) supports:
+
+```bash
+# Start the server
+uv run lazyrouter --config config.yaml
+
+# List available models from a specific provider
+uv run lazyrouter --list-models --provider zai
+
+# List models from all configured providers
+uv run lazyrouter --list-models --provider all
+
+# Output in JSON format
+uv run lazyrouter --list-models --provider all --format json
+```
+
+The `--list-models` command queries the provider's `/v1/models` API to show which models are available. Use `--provider` to target a specific provider (e.g., `zai`, `minimax`, `github-copilot`) or `all` to query every provider in your config. The `--format` flag accepts `text` (default) or `json`.
 
 ## Technical Implementation
 
